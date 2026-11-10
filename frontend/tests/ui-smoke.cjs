@@ -149,7 +149,7 @@ test('portable export exposes output location and manifest contents', async () =
   try {
     await workspace.page.getByRole('button', { name: 'Portable export', exact: true }).click();
     await workspace.page.getByText('Portable export: 1 images · 0 missing files', { exact: true }).waitFor();
-    assert.match(await workspace.page.getByLabel('Batch results').textContent(), /session, images, references, manifest, and contact sheet/);
+    assert.match(await workspace.page.getByRole('region', { name: 'Batch results', exact: true }).textContent(), /session, images, references, manifest, and contact sheet/);
     assert.ok(workspace.calls.some(call => call.action === 'export_bundle' && call.data.row_ids[0] === 'row-1'));
   } finally { await workspace.close(); }
 });
