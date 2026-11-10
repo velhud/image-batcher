@@ -136,7 +136,7 @@ npx playwright install chromium
 npm run test:ui
 ```
 
-The Python suite and browser scenarios use offline fixtures. The desktop smoke test launches the actual Electron package against its bundled backend. See the [verification guide](docs/VERIFICATION.md) for those checks and live provider acceptance.
+The Python suite and renderer tests use offline fixtures. The desktop smoke test launches the actual Electron package against its bundled backend. See the [verification guide](docs/VERIFICATION.md) for those checks and live provider acceptance.
 
 CI runs Python tests and the offline demo on Linux, macOS and Windows, renderer smoke tests on Linux, and packaged Electron smoke tests on macOS and Windows.
 

@@ -15,6 +15,8 @@ import {
 import { reportError } from '@/lib/feedback';
 import { desktopBridge } from './desktop';
 
+export class StateRefreshTimeout extends Error {}
+
 let backendOrigin = '';
 export const imageUrl = (path: string) => `${backendOrigin}/images?path=${encodeURIComponent(path)}`;
 
@@ -28,7 +30,10 @@ async function rpcCall<T>(action: string, data: Record<string, any> = {}): Promi
       body: JSON.stringify({ action, data }),
       signal: action === 'state' ? AbortSignal.timeout(8000) : undefined,
     });
-  } catch {
+  } catch (failure) {
+    if (action === 'state' && failure instanceof DOMException && failure.name === 'TimeoutError') {
+      throw new StateRefreshTimeout('The backend is busy. The workspace will refresh when it responds.');
+    }
     const error = new Error('Cannot reach the ImageAI backend. Use Reconnect to reopen the workspace.');
     if (action !== 'state' && action !== 'provider_status') reportError(error);
     throw error;

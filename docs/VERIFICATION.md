@@ -113,7 +113,7 @@ npm run test:ui
 
 For the renderer test CI install, `npm ci --ignore-scripts` with `ELECTRON_SKIP_BINARY_DOWNLOAD=1` avoids downloading the Electron desktop binary. A packaged Electron acceptance run needs a normal installation with its runtime available.
 
-The seven browser tests use Playwright Chromium and the Node test runner. They serve the actual compiled frontend but intercept RPC calls with fixtures; they do not start Python or contact an image provider.
+The renderer tests use Playwright Chromium and the Node test runner. They serve the actual compiled frontend but intercept RPC calls with fixtures; they do not start Python or contact an image provider.
 
 | Browser smoke case | Observable expected result |
 | --- | --- |
@@ -124,6 +124,7 @@ The seven browser tests use Playwright Chromium and the Node test runner. They s
 | Shared batch append | Preview uses the current appended text. Editing it invalidates the old preview; import uses the newly previewed value. |
 | HTTP conflict | Preserves the backend's explanation of the rejected change rather than replacing it with a generic status-code message. |
 | Interrupted work | Displays the interrupted state; declining the explicit retry confirmation sends no generation request. |
+| Slow state refresh | Keeps the workspace visible and resumes polling when the backend responds. |
 
 The export browser test verifies the UI/RPC contract. The Python and CLI tests verify that actual export files, relative paths and hashes are correct.
 

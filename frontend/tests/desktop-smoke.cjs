@@ -17,13 +17,19 @@ test('packaged desktop carries a real offline batch through its backend, gallery
   const relocated = path.join(scratch, 'relocated');
   await fs.mkdir(exportFolder);
   await fs.mkdir(singleFolder);
+  const env = { ...process.env, IMAGEAI_DATA_DIR: path.join(scratch, 'workspace') };
+  if (process.platform === 'darwin' && process.env.GITHUB_ACTIONS) {
+    await fs.writeFile(path.join(scratch, 'sitecustomize.py'),
+      'import faulthandler, sys\nprint("Python startup diagnostic enabled", file=sys.stderr, flush=True)\nfaulthandler.dump_traceback_later(8)\n');
+    env.PYTHONPATH = [scratch, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
+  }
   let app;
   try {
     app = await _electron.launch({
       executablePath: packaged,
       cwd: scratch,
       args: [`--user-data-dir=${profile}`],
-      env: { ...process.env, IMAGEAI_DATA_DIR: path.join(scratch, 'workspace') },
+      env,
     });
     // Keep the real isolated IPC handlers. Supply deterministic choices at the OS-dialog boundary.
     await app.evaluate(({ dialog, clipboard }, { exportFolder, saved }) => {

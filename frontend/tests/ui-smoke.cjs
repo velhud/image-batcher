@@ -198,3 +198,28 @@ test('interrupted work is visible and a declined retry makes no request', async 
     assert.equal(workspace.calls.some(call => call.action === 'generate_rows'), false);
   } finally { await workspace.close(); }
 });
+
+
+test('a slow state refresh keeps the workspace open and recovers', async () => {
+  const workspace = await openWorkspace();
+  try {
+    const { page } = workspace;
+    await page.evaluate(() => {
+      const fetch = window.fetch;
+      let timedOut = false;
+      window.fetch = (input, init) => {
+        if (!timedOut && typeof init?.body === 'string' && JSON.parse(init.body).action === 'state') {
+          timedOut = true;
+          return Promise.reject(new DOMException('State refresh timed out', 'TimeoutError'));
+        }
+        return fetch(input, init);
+      };
+    });
+    const notice = page.getByText('The backend is busy. The workspace will refresh when it responds.', { exact: true });
+    await notice.waitFor();
+    assert.ok(await page.getByRole('heading', { name: 'Studio', exact: true }).isVisible());
+    await notice.waitFor({ state: 'hidden' });
+  } finally {
+    await workspace.close();
+  }
+});

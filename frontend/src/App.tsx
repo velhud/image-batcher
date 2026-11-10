@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '@/api/client';
+import { api, StateRefreshTimeout } from '@/api/client';
 import { desktopBridge } from '@/api/desktop';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { GlobalControls } from '@/components/layout/GlobalControls';
@@ -40,11 +40,15 @@ function App() {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     refetchInterval: (query) => {
-      if (!query.state.data || query.state.error) return false;
+      if (!query.state.data) return false;
+      if (query.state.error instanceof StateRefreshTimeout) return 2000;
+      if (query.state.error) return false;
       const isGenerating = query.state.data.session.rows.some(row => row.status === 'Queued' || row.status === 'Generating');
       return isGenerating ? 500 : 2000;
     }
   });
+
+  const backendUnavailable = error && !(error instanceof StateRefreshTimeout);
 
   const reconnect = async () => {
     setActionError('');
@@ -61,7 +65,7 @@ function App() {
 
   // HOTKEYS
   useHotkeys('cmd+enter', () => {
-    if (!state || error) return;
+    if (!state || backendUnavailable) return;
     const ids = state.session.rows.filter(r => r.selected).map(r => r.id);
     if (ids.length) runAction(async () => {
       const report = await api.preflight(ids);
@@ -73,13 +77,13 @@ function App() {
   });
   
   useHotkeys('cmd+n', () => runAction(async () => {
-     if (!state || error) return;
+     if (!state || backendUnavailable) return;
      await api.addRows([""]);
      await queryClient.invalidateQueries({ queryKey: ['state'] });
   }));
 
   useHotkeys('cmd+z', () => runAction(async () => {
-     if (!state || error) return;
+     if (!state || backendUnavailable) return;
      await api.undo();
      await queryClient.invalidateQueries({ queryKey: ['state'] });
   }));
@@ -92,7 +96,7 @@ function App() {
     );
   }
 
-  if (!state || error) return <div className="h-screen flex flex-col items-center justify-center bg-background text-text-main gap-4 px-8">
+  if (!state || backendUnavailable) return <div className="h-screen flex flex-col items-center justify-center bg-background text-text-main gap-4 px-8">
     <h1 className="text-xl font-semibold">ImageAI backend unavailable</h1>
     <p role="alert" className="text-text-muted text-sm max-w-xl text-center">{actionError || errorMessage(error || 'Waiting for the local backend.')}</p>
     <Button disabled={reconnecting} onClick={reconnect}>{reconnecting ? 'Reconnecting…' : 'Reconnect'}</Button>
@@ -190,11 +194,12 @@ function App() {
             <GlobalControls state={state} />
           </div>
         </header>
-        {(actionError || error) && <div role="alert" className="flex gap-3 items-start px-6 py-3 bg-red-500/10 border-b border-red-400/20 text-red-200 text-sm">
-          <p className="flex-1 whitespace-pre-wrap break-words">{actionError || errorMessage(error)}</p>
+        {actionError && <div role="alert" className="flex gap-3 items-start px-6 py-3 bg-red-500/10 border-b border-red-400/20 text-red-200 text-sm">
+          <p className="flex-1 whitespace-pre-wrap break-words">{actionError}</p>
           {actionError && <button aria-label="Dismiss error" onClick={() => setActionError('')}>Dismiss</button>}
         </div>}
 
+        {error instanceof StateRefreshTimeout && <p role="status" className="px-6 py-2 bg-amber-500/10 text-amber-200 text-sm">{error.message}</p>}
         {state.restore_warning && <p role="status" className="px-6 py-2 bg-amber-500/10 text-amber-200 text-sm">{state.restore_warning}</p>}
 
         {/* Workspace */}
