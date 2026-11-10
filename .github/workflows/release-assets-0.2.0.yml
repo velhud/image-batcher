@@ -1,0 +1,144 @@
+name: Build ImageAI 0.2.0 release assets
+
+on:
+  push:
+    branches: [release-build/v0.2.0]
+    paths: [.github/workflows/release-assets-0.2.0.yml]
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_SOURCE: e429801d45dc0393e869c32e8dc6fad045cb6dc1
+  PYTHONUTF8: "1"
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip wheel --no-deps --wheel-dir release-assets .
+      - name: Verify the release wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/imageai-release-wheel"
+          export PATH="$RUNNER_TEMP/imageai-release-wheel/bin:$PATH"
+          python -m pip install release-assets/*.whl
+          imageai_source="$PWD"
+          cd "$RUNNER_TEMP"
+          imageai-batch --input "$imageai_source/examples/demo-prompts.csv" --mode csv --output "$RUNNER_TEMP/imageai-release-demo" --provider mock --images 2 --run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imageai-python-wheel
+          path: release-assets/*.whl
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    needs: wheel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: imageai-python-wheel
+          path: release-assets
+      - name: Build Apple silicon disk image
+        working-directory: frontend
+        run: |
+          test "$(uname -m)" = arm64
+          npm ci
+          npm run build -- --mac dmg --arm64 --publish never --config.directories.output=.release-build
+      - name: Verify the app installed from the disk image
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          dmg_files=(.release-build/*.dmg)
+          test "${#dmg_files[@]}" -eq 1
+          test -f "${dmg_files[0]}"
+          imageai_mount="$RUNNER_TEMP/imageai-dmg"
+          imageai_install="$RUNNER_TEMP/imageai-install"
+          mkdir -p "$imageai_mount" "$imageai_install"
+          hdiutil verify "${dmg_files[0]}"
+          hdiutil attach "${dmg_files[0]}" -readonly -nobrowse -mountpoint "$imageai_mount"
+          trap 'hdiutil detach "$imageai_mount"' EXIT
+          ditto "$imageai_mount/ImageAI Batch Generator.app" "$imageai_install/ImageAI Batch Generator.app"
+          python -m venv "$RUNNER_TEMP/imageai-runtime"
+          export IMAGEAI_PYTHON="$RUNNER_TEMP/imageai-runtime/bin/python"
+          "$IMAGEAI_PYTHON" -m pip install ../release-assets/*.whl
+          export IMAGEAI_ELECTRON_EXECUTABLE="$imageai_install/ImageAI Batch Generator.app/Contents/MacOS/ImageAI Batch Generator"
+          npm run test:desktop
+          cp "${dmg_files[0]}" ../release-assets/ImageAI-0.2.0-macOS-arm64.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imageai-macos-arm64
+          path: release-assets/ImageAI-0.2.0-macOS-arm64.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+  windows:
+    runs-on: windows-latest
+    needs: wheel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: imageai-python-wheel
+          path: release-assets
+      - name: Build Windows x64 installer
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build -- --win nsis --x64 --publish never --config.directories.output=.release-build
+      - name: Verify the installed Windows app
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem .release-build -File -Filter '*Setup*.exe')
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, got $($installers.Count)" }
+          $installDir = Join-Path $env:RUNNER_TEMP 'imageai-installed'
+          $install = Start-Process -FilePath $installers[0].FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "NSIS installation failed with exit $($install.ExitCode)" }
+          $runtime = Join-Path $env:RUNNER_TEMP 'imageai-runtime'
+          python -m venv $runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:IMAGEAI_PYTHON = Join-Path $runtime 'Scripts/python.exe'
+          $wheel = Get-ChildItem ../release-assets -File -Filter '*.whl'
+          & $env:IMAGEAI_PYTHON -m pip install $wheel.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:IMAGEAI_ELECTRON_EXECUTABLE = (Resolve-Path (Join-Path $installDir 'ImageAI Batch Generator.exe')).Path
+          npm run test:desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item $installers[0].FullName ../release-assets/ImageAI-0.2.0-Windows-x64-Setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imageai-windows-x64
+          path: release-assets/ImageAI-0.2.0-Windows-x64-Setup.exe
+          if-no-files-found: error
+          compression-level: 0
