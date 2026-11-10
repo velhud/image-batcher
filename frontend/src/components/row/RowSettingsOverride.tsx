@@ -108,12 +108,25 @@ export function RowSettingsOverride({ row, providers, globalSettings }: {
     {caps?.supports_seed && <div className="space-y-1">
       <label className="text-text-muted">Seed</label>
       <NumberField label="Row seed" value={settings.seed} min={0} placeholder="Global" onCommit={value => update({ seed: value, random_seed: value == null ? null : false })} />
+      <label className="text-text-muted" htmlFor={`regen-seed-${row.id}`}>Regeneration seed</label>
+      <select id={`regen-seed-${row.id}`} className={fieldClass} value={settings.regen_use_same_seed == null ? '' : String(settings.regen_use_same_seed)}
+        onChange={e => runAction(() => update({ regen_use_same_seed: e.target.value ? e.target.value === 'true' : null }))}>
+        <option value="">Inherit default</option><option value="true">Reuse configured seed</option><option value="false">Choose a new seed</option>
+      </select>
     </div>}
     {caps?.supports_negative_prompt && <div className="col-span-2 space-y-1">
       <label className="text-text-muted">Avoid (added to prompt)</label>
       <TextSetting label="Row negative prompt" value={settings.negative_prompt ?? globalSettings.negative_prompt}
         onCommit={value => update({ negative_prompt: value })} />
     </div>}
+    <div className="space-y-1">
+      <label className="text-text-muted" htmlFor={`regen-images-${row.id}`}>Previous row images</label>
+      <select id={`regen-images-${row.id}`} className={fieldClass}
+        value={settings.generate_behavior ?? (settings.keep_images == null ? '' : settings.keep_images ? 'keep' : 'replace')}
+        onChange={e => runAction(() => update({ generate_behavior: e.target.value || null, keep_images: null }))}>
+        <option value="">Inherit default</option><option value="keep">Keep</option><option value="replace">Replace after success</option>
+      </select>
+    </div>
     <button className="col-span-2 mt-2 text-text-muted hover:text-white underline text-left" onClick={() => runAction(() => update(resetRowSettings))}>Reset all overrides</button>
   </fieldset>;
 }

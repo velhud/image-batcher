@@ -33,7 +33,7 @@ export function GlobalControls({ state }: GlobalControlsProps) {
   };
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center gap-2">
       {/* Provider Selector */}
       <div className="relative">
         <select
@@ -69,7 +69,7 @@ export function GlobalControls({ state }: GlobalControlsProps) {
       </div>
 
       {/* Stats Pill */}
-      <div className="ml-4 px-3 py-1.5 rounded-full bg-surface/50 border border-white/5 text-[10px] font-mono text-text-muted">
+      <div className="whitespace-nowrap px-2 py-1.5 rounded-full bg-surface/50 border border-white/5 text-[10px] font-mono text-text-muted">
          RPM: {settings.rate_limit_rpm}
       </div>
     </div>

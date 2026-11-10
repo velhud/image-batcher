@@ -4,6 +4,8 @@ import json
 import mimetypes
 import os
 import threading
+import uuid
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Dict, Any, List
@@ -109,7 +111,6 @@ class BackendState:
             
         # --- Session Management ---
         if action == "new_session":
-            import uuid
             self.replace_session(SessionData(id=str(uuid.uuid4()), global_settings=GlobalSettings(), rows=[]))
             return self.to_dict()
 
@@ -143,7 +144,6 @@ class BackendState:
 
         # --- Row Operations ---
         if action == "add_rows":
-            import uuid
             prompts: List[str] = data.get("prompts", [])
             rows_data: List[Dict[str, Any]] = data.get("rows", [])
             if not isinstance(prompts, list) or any(not isinstance(prompt, str) for prompt in prompts):
@@ -183,7 +183,6 @@ class BackendState:
             }
 
         if action == "import_batch":
-            import uuid
             result = parse_batch_input(
                 data.get("raw", ""),
                 mode=data.get("mode", "lines"),
@@ -277,7 +276,6 @@ class BackendState:
             rid = data.get("row_id")
             row = self._row_by_id(rid)
             if row:
-                import uuid
                 clone = RowData.from_dict(row.to_dict())
                 clone.id = str(uuid.uuid4())
                 clone.images = [] # Don't clone images
@@ -300,13 +298,17 @@ class BackendState:
             rows = [row for row in rows if row is not None]
             if action == "retry_failed":
                 rows = [row for row in rows if row.status in {RowStatus.ERROR, RowStatus.FILTERED}]
+            missing_only = action == "generate_missing" or bool(data.get("missing_only", False))
+            if missing_only:
+                rows = [row for row in rows if row.status not in {RowStatus.QUEUED, RowStatus.GENERATING, RowStatus.INTERRUPTED}]
             report = preflight(rows, self.session.global_settings, self.registry)
             if not report["valid"]:
                 raise ValueError("Batch validation failed: " + "; ".join(f"{r['prompt_id'] or r['row_id']}: {', '.join(r['errors'])}" for r in report["rows"] if r["errors"]))
             queued = []
             for row in rows:
                 if self.queue.enqueue(row, self.session.global_settings, row_index=self.session.rows.index(row) + 1,
-                                      missing_only=action == "generate_missing" or bool(data.get("missing_only", False))):
+                                      missing_only=missing_only,
+                                      regenerate=action == "generate_rows" and data.get("regenerate") is True):
                     queued.append(row.id)
             return {"queued": queued}
 
@@ -367,24 +369,6 @@ class BackendState:
             log_path = self.session_manager.session_output_dir().parent / "generation_log.jsonl"
             return {"rows": read_generation_log(log_path), "path": str(log_path)}
 
-        if action == "select_image_file":
-            from PySide6.QtWidgets import QApplication, QFileDialog
-            if not QApplication.instance():
-                _ = QApplication([])
-            file_path, _ = QFileDialog.getOpenFileName(None, "Select Image", "", "Images (*.png *.jpg *.jpeg *.webp)")
-            if file_path:
-                mime, _ = mimetypes.guess_type(file_path)
-                return {"path": file_path, "mime": mime or "image/png"}
-            return None
-
-        if action == "select_folder":
-            from PySide6.QtWidgets import QApplication, QFileDialog
-
-            if not QApplication.instance():
-                _ = QApplication([])
-            folder = QFileDialog.getExistingDirectory(None, "Select Folder")
-            return {"path": folder}
-            
         if action == "export_bundle":
             ids = data.get("row_ids")
             rows = self.session.rows if ids is None else [row for row in self.session.rows if row.id in ids]
@@ -394,48 +378,31 @@ class BackendState:
             folder = Path(data.get("folder", str(Path.home() / "Pictures")))
             rows = [self._row_by_id(rid) for rid in data.get("row_ids", [])]
             rows = [r for r in rows if r]
+            image_id = data.get("image_id")
+            if image_id is not None:
+                rows = [replace(row, images=[image for image in row.images if image.id == image_id]) for row in rows]
+                if not any(row.images for row in rows):
+                    raise ValueError("The selected image is no longer in the session.")
             exporter = ImageExporter(self.session.global_settings.naming_pattern)
             count, _ = exporter.export_rows(rows, folder, export_metadata=True)
             return {"exported": count}
 
-        if action == "copy_image_to_clipboard":
-            from PySide6 import QtGui, QtWidgets
-            if not QtWidgets.QApplication.instance():
-                _ = QtWidgets.QApplication([])
-            path = data.get("path")
-            if path and Path(path).exists():
-                img = QtGui.QImage(path)
-                if not img.isNull():
-                    QtWidgets.QApplication.clipboard().setImage(img)
-                    return {"copied": True}
-            return {"copied": False}
-
-        if action == "open_path":
-            from PySide6 import QtGui, QtCore
-            path = data.get("path")
-            if path:
-                url = QtCore.QUrl.fromLocalFile(path)
-                QtGui.QDesktopServices.openUrl(url)
-            return {"opened": True}
-
         # --- Templates ---
-        if action == "save_template":
+        if action in {"save_template", "expand_template", "apply_template"}:
             from app.models import PromptTemplate
-            tpl = PromptTemplate.from_dict(data)
-            self.session.templates.append(tpl)
-            self.session_manager.autosave()
-            return {"templates": [t.to_dict() for t in self.session.templates]}
-            
-        if action == "expand_template":
-            from app.templates import expand_template, parse_variable_block
-            from app.models import PromptTemplate
-            tpl = PromptTemplate(
-                name=data.get("name", ""),
-                template=data.get("template", ""),
-                variables=data.get("variables", {})
-            )
-            prompts = expand_template(tpl)
-            return {"prompts": prompts}
+            from app.templates import expand_template
+
+            template = PromptTemplate.from_dict(data)
+            if action == "expand_template":
+                return {"prompts": expand_template(template)}
+            if action == "apply_template":
+                prompts = expand_template(template)
+                if not prompts or any(not prompt.strip() for prompt in prompts):
+                    raise ValueError("Template expansion must produce nonempty prompts.")
+                self.session.rows.extend(RowData(id=str(uuid.uuid4()), prompt=prompt) for prompt in prompts)
+            self.session.templates.append(template)
+            self.push_state()
+            return {"templates": [item.to_dict() for item in self.session.templates]}
 
         raise ValueError(f"Unknown action: {action}")
 
@@ -453,7 +420,7 @@ def _json_response(handler: BaseHTTPRequestHandler, body: Dict, status: int = 20
 def _origin_allowed(origin: str | None) -> bool:
     if origin is None:
         return True
-    allowed = {"null", "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"}
+    allowed = {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"}
     allowed.update(item.strip() for item in os.environ.get("IMAGEAI_ALLOWED_ORIGINS", "").split(",") if item.strip())
     return origin in allowed
 

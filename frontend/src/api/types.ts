@@ -137,6 +137,7 @@ export interface BackendState {
   session: SessionDTO;
   providers: ProviderInfo[];
   stats: StatsDTO;
+  restore_warning?: string;
 }
 
 export interface ParsedBatchRowDTO {
@@ -165,7 +166,9 @@ export interface ProviderStatusDTO {
 
 export interface BatchVerificationDTO {
   total_prompts: number;
-  successful_images: number;
+  successful_prompts: number;
+  image_count: number;
+  requested_image_count: number;
   filtered_count: number;
   failed_count: number;
   missing_count: number;

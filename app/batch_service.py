@@ -1,4 +1,4 @@
-"""Network-free batch validation shared by both primary clients and the CLI."""
+"""Network-free batch validation shared by the desktop backend and CLI."""
 from __future__ import annotations
 
 from app.models import RowData, GlobalSettings, effective_settings, generation_prompt, validate_settings

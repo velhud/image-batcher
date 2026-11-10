@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
+import { desktopBridge } from '@/api/desktop';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { GlobalControls } from '@/components/layout/GlobalControls';
 import { ListView } from '@/components/canvas/ListView';
@@ -11,7 +12,7 @@ import { StatsDialog } from '@/components/dialogs/StatsDialog';
 import { Footer } from '@/components/layout/Footer';
 import { useSession } from '@/hooks/useSession';
 import { useHotkeys } from '@/hooks/useHotkeys';
-import { Loader2, FolderOpen, Save, RotateCcw, RotateCw, Filter, BarChart2 } from 'lucide-react';
+import { Loader2, FolderOpen, Save, RotateCcw, RotateCw, Filter, BarChart2, FilePlus2, SaveAll } from 'lucide-react';
 import { Button } from '@/components/common/Button';
 import { API_ERROR_EVENT, errorMessage, runAction } from '@/lib/feedback';
 
@@ -97,8 +98,18 @@ function App() {
     await api.saveSession();
   };
 
+  const handleSaveAs = async () => {
+    const path = await desktopBridge().saveSession();
+    if (path) await api.saveSession(path);
+  };
+
+  const handleNew = async () => {
+    if (!confirm('Start a new session? Save a copy first if you want to reopen the current workspace.')) return;
+    queryClient.setQueryData(['state'], await api.newSession());
+  };
+
   const handleLoad = async () => {
-    const path = prompt("Enter full path to .json to load:");
+    const path = await desktopBridge().openSession();
     if (!path) return;
     const next = await api.loadSession(path);
     queryClient.setQueryData(['state'], next);
@@ -111,7 +122,7 @@ function App() {
       <main className="flex-1 flex flex-col min-w-0 bg-gradient-to-br from-background to-[#050b14]">
         {/* Header */}
         <header className="h-16 border-b border-white/5 flex items-center justify-between px-8 gap-4 bg-background/50 backdrop-blur-sm z-10">
-          <div className="min-w-[180px]">
+          <div className="min-w-[122px]">
             <h1 className="text-xl font-bold tracking-tight">
               {activeView === 'list' ? 'Studio' : 'Gallery'}
             </h1>
@@ -121,7 +132,7 @@ function App() {
             </div>
           </div>
 
-          <div className="flex-1 max-w-md mx-4 relative group">
+          <div className="min-w-36 flex-1 max-w-md relative group">
             <Filter size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-primary transition-colors" />
             <input 
                 placeholder="Filter by tags..." 
@@ -131,7 +142,7 @@ function App() {
             />
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <div className="flex items-center gap-1">
               <Button variant="ghost" size="icon" onClick={() => runAction(handleUndo)} title="Undo">
                 <RotateCcw size={16}/>
@@ -140,8 +151,14 @@ function App() {
                 <RotateCw size={16}/>
               </Button>
               <div className="h-4 w-px bg-white/10 mx-1" />
+              <Button variant="ghost" size="icon" onClick={() => runAction(handleNew)} title="New Session">
+                <FilePlus2 size={16}/>
+              </Button>
               <Button variant="ghost" size="icon" onClick={() => runAction(handleSave)} title="Quick Save">
                 <Save size={16}/>
+              </Button>
+              <Button variant="ghost" size="icon" onClick={() => runAction(handleSaveAs)} title="Save Session As">
+                <SaveAll size={16}/>
               </Button>
               <Button variant="ghost" size="icon" onClick={() => runAction(handleLoad)} title="Open Session">
                 <FolderOpen size={16}/>
@@ -158,6 +175,8 @@ function App() {
           <p className="flex-1 whitespace-pre-wrap break-words">{actionError || errorMessage(error)}</p>
           {actionError && <button aria-label="Dismiss error" onClick={() => setActionError('')}>Dismiss</button>}
         </div>}
+
+        {state.restore_warning && <p role="status" className="px-6 py-2 bg-amber-500/10 text-amber-200 text-sm">{state.restore_warning}</p>}
 
         {/* Workspace */}
         <div className="flex-1 p-8 overflow-y-auto scroll-smooth">

@@ -4,18 +4,18 @@ Run these checks after applying the changes to the target checkout. This is the 
 
 ## 1. Install the candidate and run Python tests
 
-From the repository root, use Python 3.10 or newer. The full suite includes desktop tests, so install both optional groups:
+From the repository root, use Python 3.10 or newer. Install the test dependencies:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[desktop,test]'
-QT_QPA_PLATFORM=offscreen python -m pytest -q
+python -m pip install -e '.[test]'
+python -m pytest -q
 ```
 
 The default suite uses temporary state, local mock providers and patched HTTP responses. It does not require provider credentials or make paid image-generation calls.
 
-The full suite covers parser and import validation, queue admission races, cancellation and stopping, weighted quotas, partial output retention, provider request contracts, atomic sessions, verified receipt recovery, portable exports, the shared event reducer, backend lifecycle and PySide thread delivery. The CLI tests launch actual subprocesses.
+The full suite covers parser and import validation, queue admission races, cancellation and stopping, weighted quotas, partial output retention, provider request contracts, atomic sessions, verified receipt recovery, portable exports, the shared event reducer, and backend lifecycle. The CLI tests launch actual subprocesses.
 
 Useful focused checks when integrating individual parts are:
 
@@ -24,7 +24,6 @@ python -m pytest -q tests/test_queue_reliability.py tests/test_queue_manager.py 
 python -m pytest -q tests/test_provider_contracts.py tests/test_azure_provider.py
 python -m pytest -q tests/test_sessions_exports_release.py tests/test_release_integration_review.py
 python -m pytest -q tests/test_backend_release.py tests/test_backend_smoke.py
-QT_QPA_PLATFORM=offscreen python -m pytest -q tests/test_desktop_release.py
 python -m pytest -q tests/test_cli.py
 ```
 
@@ -130,67 +129,35 @@ The seven browser tests use Playwright Chromium and the Node test runner. They s
 
 The export browser test verifies the UI/RPC contract. The Python and CLI tests verify that actual export files, relative paths and hashes are correct.
 
-## 4. Verify the real desktop workflow on macOS
+## 4. Verify the packaged desktop workflow
 
-Use isolated state directories for these acceptance runs. The Swift package declares macOS 13 or newer and Swift tools 5.9 or newer. These checks require an actual supported Mac with the relevant developer tools; Linux browser tests do not satisfy them.
-
-### PySide
-
-Return to the repository root with the virtual environment active:
+Use an isolated `IMAGEAI_DATA_DIR` for interactive tests. With Python dependencies installed and Node 22 active:
 
 ```bash
-IMAGEAI_DATA_DIR="$imageai_verify_dir/pyside-state" python main.py
-```
-
-Use the mock provider and verify:
-
-1. Import the example CSV, retaining prompt/category IDs. Preview shared appended text, edit the text, and confirm that applying uses the edited content.
-2. Generate the batch. Images and status changes appear without UI-thread warnings or a frozen interface.
-3. Change a global setting and confirm untouched rows still inherit it. Explicit row overrides remain overrides after refresh.
-4. Queue enough rows to observe pending work. Stop a pending row and use stop-all; cancelled pending rows must not subsequently generate.
-5. Regenerate one row with “keep” and then with “replace.” Older physical outputs must not be overwritten; a failed/cancelled replacement must preserve the earlier successful image set.
-6. Save, close and reopen. Completed results remain accessible. A session closed during generation shows unresolved work as interrupted and does not restart it automatically.
-7. Export a portable project and open it after relocation. Check the manifest and contact sheet against the saved images.
-
-For an interrupted row, verify that per-row, selected-row and all-row generation ask for review, default to declining, and send no new work when declined. The undo/recovery regressions also verify that undo does not reset consumed receipt identities and that historical active states become interrupted.
-
-Use the event-controlled regression tests for races that are too fast to observe reliably with the mock UI. A manual click sequence is not a substitute for those tests.
-
-### SwiftUI
-
-From the repository root, keep the Python virtual environment active so the native launcher's `python3` resolves to the installed environment:
-
-```bash
-cd macos-swiftui
-swift build
-swift test
-IMAGEAI_DATA_DIR="$imageai_verify_dir/swift-state" swift run ImagenNative
-```
-
-For the backend-autolaunch gate, ensure another ImageAI backend is not already occupying `127.0.0.1:8765`. Verify that the native client starts or connects to the intended backend, loads a session, imports a small mock batch, generates it and displays retained images after reopen.
-
-Load an interrupted row and decline its generation confirmation. Verify that no new `generate_rows` request is sent; an explicit accepted confirmation should be required before a fresh request.
-
-Record which features the native client exposes. The SwiftUI client remains experimental and does not become feature-equivalent to the PySide/React surfaces merely because its package compiles.
-
-### Electron
-
-From `frontend/`, use a normal `npm ci` installation and the activated Python environment:
-
-```bash
+cd frontend
 npm ci
-IMAGEAI_DATA_DIR="$imageai_verify_dir/electron-state" npm run dev
+npm run build -- --dir --publish never --config.directories.output=.desktop-package
+export IMAGEAI_PYTHON="$(command -v python)"
+export IMAGEAI_ELECTRON_EXECUTABLE="$(find "$PWD/.desktop-package" -type f -path '*/Contents/MacOS/ImageAI Batch Generator' -print -quit)"
+npm run test:desktop
 ```
 
-Verify real Python backend startup, RPC state refresh, mock generation, file dialogs, per-row cancellation and portable export from the native window. Check quit/relaunch behavior with completed work and with an interrupted batch. The shell terminates its child backend on quit; unresolved remote work must not be presented as automatically resumed on restart.
+On Windows, set `IMAGEAI_PYTHON` to the Python interpreter and `IMAGEAI_ELECTRON_EXECUTABLE` to the full path of `.desktop-package/win-unpacked/ImageAI Batch Generator.exe`. The smoke test starts the packaged app from a different directory and runs the real Python backend. It supplies deterministic file selections at the OS-dialog boundary and verifies the decoded image at the clipboard boundary.
 
-A packaged Electron release has an additional gate:
+For interactive acceptance, launch the packaged executable with the same Python interpreter. In the desktop window:
 
-```bash
-npm run build
-```
+1. Import a structured CSV, preflight the batch, generate with Mock, and verify saved images and original identifiers.
+2. Change global settings and verify untouched rows inherit them. Use per-row settings to keep or replace images and to override the regeneration seed where supported.
+3. Stop a row or stop after current work. Check terminal statuses and use Generate Missing to resume eligible work. Decline an interrupted retry and confirm no new request starts.
+4. Use the native reference picker to attach multiple files on a compatible provider. Clear them before returning to Mock.
+5. Open a generated image in the gallery. Copy it, reveal it in the file manager, export just that image, then export the row.
+6. Save As, start a new session, export a portable batch, and open a relocated `session.json` through the native file picker. Verify the reopened images and manifest. Restart the app and verify session restoration.
 
-Launch the produced artifact from a fresh location outside the source checkout. Confirm that it can find its Python runtime/dependencies and backend resources, start the backend, generate mock images and export them. A successful `build:web` qualifies only the web assets. If the packaged artifact cannot satisfy these checks, retain source-based experimental Electron instructions rather than advertising a standalone installer.
+The package includes the Python backend source. Install the Python runtime and project dependencies separately before testing an executable from another location.
+
+### Experimental SwiftUI
+
+Run `swift test --package-path macos-swiftui` and `swift build -c release --package-path macos-swiftui` on a Mac with the macOS SDK. Follow the separate [SwiftUI runbook](../macos-swiftui/README.md) for native interaction and backend reconnection.
 
 ## 5. Minimum real-provider acceptance
 

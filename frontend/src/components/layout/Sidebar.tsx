@@ -32,7 +32,7 @@ export function Sidebar({ state }: { state: BackendState }) {
           </div>
           {!isSidebarCollapsed && (
             <span className="font-bold text-lg tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-white/60">
-              IMAGEN
+              ImageAI
             </span>
           )}
         </div>

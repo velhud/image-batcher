@@ -8,10 +8,9 @@ This document describes the implementation in this repository. Provider availabi
 
 | Surface or component | Source | Responsibility |
 | --- | --- | --- |
-| PySide desktop | [`main.py`](../main.py), [`app/ui/main_window.py`](../app/ui/main_window.py) | Owns a session and queue directly. Converts worker callbacks into queued Qt signals so widgets and session state update on the GUI thread. |
-| Local RPC backend | [`app/backend_server.py`](../app/backend_server.py) | Owns session mutation, validation, queue admission, file access and export for alternate clients. Binds to loopback by default. |
-| React/Electron | [`frontend/src`](../frontend/src), [`frontend/electron`](../frontend/electron) | Provides the browser interface and desktop shell. Uses the RPC backend rather than a second generation engine. |
-| SwiftUI client | [`macos-swiftui`](../macos-swiftui) | Experimental native macOS client for the same RPC contract. It has a smaller interface than the primary clients and requires its own macOS qualification. |
+| Local RPC backend | [`app/backend_server.py`](../app/backend_server.py) | Owns session mutation, validation, queue admission, file access and export for the desktop clients. Binds to loopback. |
+| React/Electron | [`frontend/src`](../frontend/src), [`frontend/electron`](../frontend/electron) | Provides the primary desktop workspace and its isolated native file/clipboard bridge. The packaged app starts the Python RPC backend. |
+| SwiftUI client | [`macos-swiftui`](../macos-swiftui) | Experimental native macOS client for the same RPC contract. It has a smaller interface than the primary desktop app and requires its own macOS qualification. |
 | Headless CLI | [`app/cli.py`](../app/cli.py) | Uses the shared Python core directly. Defaults to network-free preflight; `--run` explicitly starts generation. Does not import the HTTP server or restore an old session. |
 | Shared model and preflight | [`app/models.py`](../app/models.py), [`app/batch_service.py`](../app/batch_service.py) | Validates settings, derives row overrides, checks provider capabilities and reports planned images and initial request counts. |
 | Queue and rate limiter | [`app/queue_manager.py`](../app/queue_manager.py), [`app/scheduler.py`](../app/scheduler.py) | Own admission, immutable jobs, concurrency, cancellation, result registration, receipts and local quota scheduling. |
@@ -56,9 +55,9 @@ The queue admits at most one active or pending job per row. It registers admissi
 
 State changes append notifications under the queue lock. A single FIFO drain invokes listeners outside that lock. This preserves queued/started/terminal ordering and allows a listener to call cancellation without deadlocking the queue. Position-only events do not trigger session persistence in the primary consumers.
 
-`is_idle()` includes outstanding jobs, queued notifications and a notification callback currently executing. A session switch must wait for the terminal state to reach its consumer, not merely for an HTTP call to return. The PySide client also delivers pending Qt calls before evaluating its session-change boundary.
+`is_idle()` includes outstanding jobs, queued notifications and a notification callback currently executing. A session switch must wait for the terminal state to reach its consumer, not merely for an HTTP call to return.
 
-Both primary owners attach a queue generation number to callbacks. Events from a retired queue cannot mutate the replacement session. Session changes and concurrency changes require an idle queue.
+The RPC backend attaches a queue generation number to callbacks. Events from a retired queue cannot mutate the replacement session. Session changes and concurrency changes require an idle queue.
 
 | Operation or outcome | Behavior |
 | --- | --- |
@@ -85,7 +84,7 @@ The local limiter uses monotonic time and a weighted sliding window. Workers sha
 
 A request requiring more units than the entire configured window fails promptly with an actionable validation error. It cannot wait forever for an impossible admission. Cancellation interrupts a quota wait; changing the configured limit wakes waiters.
 
-The PySide and RPC owners reuse the previous limiter when recreating an idle queue. Changing sessions or concurrency therefore does not clear quota history and create an accidental fresh burst.
+The RPC backend reuses the previous limiter when recreating an idle queue. Changing sessions or concurrency therefore does not clear quota history and create an accidental fresh burst.
 
 This is **per-process scheduling**, not account-wide enforcement. Separate application processes do not coordinate their budgets, and limiter history is not persisted across process restarts. Reservations are made at job admission to provider execution; they are not an independent measurement of every remote request or provider billing event. Actual provider limits remain authoritative.
 
@@ -93,7 +92,7 @@ The shared HTTP transport uses bounded connect/read timeouts and disables redire
 
 The reducer maps an `outcome_unknown` result to `Interrupted`. Such a row is excluded from bulk missing-only/retry behavior. The user must review the result and explicitly request another generation.
 
-The primary interfaces distinguish that deliberate request from routine bulk generation. PySide asks before generating interrupted rows, including selected/all-row actions, with the default answer set to No. React exposes an explicit review/retry action, and the SwiftUI client has a corresponding confirmation path. These interface confirmations do not change the queue's rule that missing-only work must never replay an interrupted request.
+The Electron client asks for explicit confirmation before regenerating an interrupted row, including from a selected or full batch. The SwiftUI client has a corresponding confirmation path. These interface confirmations do not change the queue's rule that missing-only work must never replay an interrupted request.
 
 Provider catalogs are bounded declarations in source, not remote model discovery. Capability validation controls model options and reference support. Gemini dimensions select supported aspect ratios and resolution tiers; actual saved raster dimensions and format are recorded from the result.
 

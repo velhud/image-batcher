@@ -20,3 +20,4 @@ wheelhouse/
 .venv/
 demo-output/
 frontend/test-results/
+frontend/.desktop-package/

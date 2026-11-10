@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { GlobalSettingsDTO, ProviderInfo, RowDTO } from '@/api/types';
 import { api, imageUrl } from '@/api/client';
+import { copyImage, copyText, desktopBridge } from '@/api/desktop';
 import { Badge } from '@/components/common/Badge';
 import { Button } from '@/components/common/Button';
-import { Play, Trash2, Copy, Image as ImageIcon, Settings2, FolderOpen, StopCircle, Files, Paperclip, XCircle } from 'lucide-react';
+import { Play, Trash2, Copy, Image as ImageIcon, Settings2, FolderOpen, StopCircle, Files, Paperclip, XCircle, Download } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { RowSettingsOverride } from './RowSettingsOverride';
 import { ImageLightbox } from '@/components/dialogs/ImageLightbox';
@@ -51,33 +52,32 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
     const report = await api.preflight([row.id]);
     if (!report.valid) throw new Error(report.rows.flatMap(item => item.errors).join('\n'));
     if (row.status === 'Interrupted' && !confirm('This request was interrupted and may have completed at the provider. Start a new request for this row?')) return;
-    await api.generateRows([row.id]); 
+    await api.generateRows([row.id], row.images.length > 0);
     queryClient.invalidateQueries({ queryKey: ['state'] }); 
   };
   const handleStop = async () => { await api.cancelRow(row.id); await queryClient.invalidateQueries({ queryKey: ['state'] }); };
   const handleDelete = async () => { if (confirm("Delete?")) { await api.deleteRows([row.id]); queryClient.invalidateQueries({ queryKey: ['state'] }); }};
   const handleDuplicate = async () => { await api.duplicateRow(row.id); queryClient.invalidateQueries({ queryKey: ['state'] }); };
-  const handleCopyImage = async () => {
-    if (!displayImage) return;
-    const res = await api.copyImage(displayImage.file_path);
-    if (res.copied) {
-      // Simple feedback; ideally replace with toast
-      alert("Image copied to clipboard");
+  const handleAddAttachments = async () => {
+    const paths = await desktopBridge().selectReferences();
+    const existing = new Set(row.attachments.map(item => item.file_path));
+    const added = [...new Set(paths)].filter(path => !existing.has(path));
+    if (!added.length) return;
+    if (row.attachments.length + added.length > (caps?.max_attachments ?? 0)) {
+      throw new Error(`This model accepts at most ${caps?.max_attachments ?? 0} reference images per row.`);
     }
+    await api.updateRow(row.id, {
+      attachments: [...row.attachments, ...added.map(file_path => ({
+        id: generateId(), file_path,
+        mime_type: /\.webp$/i.test(file_path) ? 'image/webp' : /\.jpe?g$/i.test(file_path) ? 'image/jpeg' : 'image/png',
+      }))],
+    });
+    await queryClient.invalidateQueries({ queryKey: ['state'] });
   };
 
-  const handleAddAttachment = async () => {
-    const res = await api.selectImageFile();
-    if (res) {
-      const newAtt = {
-        id: generateId(),
-        file_path: res.path,
-        mime_type: res.mime,
-      };
-      const updated = [...(row.attachments || []), newAtt];
-      await api.updateRow(row.id, { attachments: updated });
-      queryClient.invalidateQueries({ queryKey: ['state'] });
-    }
+  const exportRow = async () => {
+    const folder = await desktopBridge().selectFolder(globalSettings.export_folder);
+    if (folder) await api.export([row.id], folder);
   };
 
   const removeAttachment = async (attId: string) => {
@@ -155,6 +155,10 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
             </div>
 
             <div className="flex flex-wrap gap-2 mb-1">
+                {row.attachments.length > 0 && <Button size="sm" variant="ghost" disabled={busy} onClick={() => runAction(async () => {
+                  await api.updateRow(row.id, { attachments: [] });
+                  await queryClient.invalidateQueries({ queryKey: ['state'] });
+                })}>Clear references</Button>}
                 {(row.attachments || []).map((att) => (
                     <div
                         key={att.id}
@@ -193,13 +197,13 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
                     <Settings2 size={14} />
                 </Button>
                 <Button size="sm" variant="ghost" title={caps?.supports_attachments ? `Attach reference image (maximum ${caps.max_attachments})` : 'This model does not accept reference images'}
-                  disabled={busy || !caps?.supports_attachments || row.attachments.length >= caps.max_attachments} onClick={() => runAction(handleAddAttachment)}>
+                  disabled={busy || !caps?.supports_attachments || row.attachments.length >= caps.max_attachments} onClick={() => runAction(handleAddAttachments)}>
                     <Paperclip size={14} className={row.attachments?.length ? "text-primary" : ""} />
                 </Button>
                 <Button size="sm" variant="ghost" title="Duplicate Row" onClick={() => runAction(handleDuplicate)}>
                     <Files size={14} />
                 </Button>
-                <Button size="sm" variant="ghost" title="Copy Prompt" onClick={() => runAction(() => navigator.clipboard.writeText(prompt))}>
+                <Button size="sm" variant="ghost" title="Copy Prompt" onClick={() => runAction(() => copyText(prompt))}>
                     <Copy size={14} />
                 </Button>
                 
@@ -207,11 +211,14 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
                 
                 {displayImage && (
                     <>
-                        <Button size="sm" variant="ghost" title="Copy Image" onClick={() => runAction(handleCopyImage)}>
+                        <Button size="sm" variant="ghost" title="Copy Image" onClick={() => runAction(() => copyImage(imageUrl(displayImage.file_path)))}>
                             <Copy size={14} />
                         </Button>
-                        <Button size="sm" variant="ghost" title="Open image" onClick={() => runAction(() => api.openPath(displayImage.file_path))}>
+                        <Button size="sm" variant="ghost" title="Reveal image in file manager" onClick={() => runAction(() => desktopBridge().revealImage(displayImage.file_path))}>
                             <FolderOpen size={14} />
+                        </Button>
+                        <Button size="sm" variant="ghost" title="Export row images" onClick={() => runAction(exportRow)}>
+                            <Download size={14} />
                         </Button>
                     </>
                 )}
@@ -261,7 +268,8 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
     {lightboxIndex !== null && (
         <ImageLightbox 
             images={row.images} 
-            initialIndex={lightboxIndex} 
+            initialIndex={lightboxIndex}
+            defaultExportFolder={globalSettings.export_folder}
             onClose={() => setLightboxIndex(null)} 
         />
     )}

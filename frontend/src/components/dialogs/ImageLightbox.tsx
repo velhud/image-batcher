@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ImageResultDTO } from '@/api/types';
 import { api, imageUrl } from '@/api/client';
+import { copyImage, copyText, desktopBridge } from '@/api/desktop';
+import { runAction } from '@/lib/feedback';
 import { Button } from '@/components/common/Button';
 import { X, ChevronLeft, ChevronRight, FolderOpen, Download, Copy } from 'lucide-react';
 
 interface ImageLightboxProps {
   images: ImageResultDTO[];
   initialIndex: number;
+  defaultExportFolder?: string | null;
   onClose: () => void;
 }
 
-export function ImageLightbox({ images, initialIndex, onClose }: ImageLightboxProps) {
+export function ImageLightbox({ images, initialIndex, defaultExportFolder, onClose }: ImageLightboxProps) {
   const [index, setIndex] = useState(initialIndex);
   const current = images[index];
+  const [feedback, setFeedback] = useState('');
 
   useEffect(() => {
     if (index >= images.length) setIndex(0);
@@ -37,6 +41,19 @@ export function ImageLightbox({ images, initialIndex, onClose }: ImageLightboxPr
   }, [handleNext, handlePrev, onClose]);
 
   if (!current) return null;
+  const exportImages = async (single: boolean) => {
+    const folder = await desktopBridge().selectFolder(defaultExportFolder);
+    if (!folder) return;
+    const result = await api.export([current.row_id], folder, single ? current.id : undefined);
+    setFeedback(`Exported ${result.exported} images.`);
+  };
+  const perform = (action: () => Promise<unknown>) => runAction(async () => {
+    try {
+      await action();
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : String(error));
+    }
+  });
 
   return (
     <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-md flex flex-col animate-in fade-in duration-200">
@@ -49,7 +66,7 @@ export function ImageLightbox({ images, initialIndex, onClose }: ImageLightboxPr
         </button>
       </div>
 
-      <div className="flex-1 flex items-center justify-center relative p-8">
+      <div className="flex-1 min-h-0 flex items-center justify-center relative p-8">
         <img 
             src={imageUrl(current.file_path)} 
             className="max-w-full max-h-full object-contain shadow-2xl rounded-sm"
@@ -68,21 +85,20 @@ export function ImageLightbox({ images, initialIndex, onClose }: ImageLightboxPr
         )}
       </div>
 
-      <div className="h-20 border-t border-white/10 flex items-center justify-center gap-4 bg-black/40">
-        <Button variant="secondary" onClick={() => api.openPath(current.file_path)}>
-            <FolderOpen size={16} className="mr-2" /> Show in Finder
+      {feedback && <p role="status" className="text-center text-sm text-text-muted pb-2">{feedback}</p>}
+      <div className="min-h-20 py-3 flex-wrap border-t border-white/10 flex items-center justify-center gap-4 bg-black/40">
+        <Button variant="secondary" onClick={() => perform(() => desktopBridge().revealImage(current.file_path))}>
+          <FolderOpen size={16} className="mr-2" /> Reveal in file manager
         </Button>
-        <Button variant="secondary" onClick={() => navigator.clipboard.writeText(current.file_path)}>
-            <Copy size={16} className="mr-2" /> Copy Path
+        <Button variant="secondary" onClick={() => perform(() => copyText(current.file_path))}>Copy path</Button>
+        <Button variant="secondary" onClick={() => perform(async () => {
+          await copyImage(imageUrl(current.file_path));
+          setFeedback('Image copied.');
+        })}><Copy size={16} className="mr-2" /> Copy image</Button>
+        <Button variant="primary" onClick={() => perform(() => exportImages(true))}>
+          <Download size={16} className="mr-2" /> Export this image
         </Button>
-        <Button variant="primary" onClick={async () => {
-            const res = await api.selectFolder();
-            if (res.path) {
-                await api.export([current.row_id], res.path);
-            }
-        }}>
-            <Download size={16} className="mr-2" /> Export
-        </Button>
+        {images.length > 1 && <Button variant="secondary" onClick={() => perform(() => exportImages(false))}>Export row images</Button>}
       </div>
     </div>
   );

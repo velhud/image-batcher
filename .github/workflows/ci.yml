@@ -7,6 +7,7 @@ permissions:
 jobs:
   python:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -19,13 +20,13 @@ jobs:
             python: '3.12'
     runs-on: ${{ matrix.os }}
     env:
-      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -e '.[desktop,test]'
+      - run: python -m pip install -e '.[test]'
       - run: python -m pytest -q
       - run: python -m app.cli --input examples/demo-prompts.csv --mode csv --output demo-output --provider mock --images 2 --run
   web:
@@ -45,6 +46,42 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx playwright install --with-deps chromium
       - run: npm run test:ui
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: python -m pip install -e ..
+      - run: npm ci
+      - run: npm run build -- --dir --publish never --config.directories.output=.desktop-package
+      - if: runner.os == 'macOS'
+        run: |
+          export IMAGEAI_PYTHON="$(command -v python)"
+          export IMAGEAI_ELECTRON_EXECUTABLE="$(find "$PWD/.desktop-package" -type f -path '*/Contents/MacOS/ImageAI Batch Generator' -print -quit)"
+          npm run test:desktop
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:IMAGEAI_PYTHON = (Get-Command python).Source
+          $env:IMAGEAI_ELECTRON_EXECUTABLE = (Resolve-Path '.desktop-package/win-unpacked/ImageAI Batch Generator.exe').Path
+          npm run test:desktop
   native:
     runs-on: macos-latest
     defaults:

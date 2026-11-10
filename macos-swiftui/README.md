@@ -10,7 +10,7 @@ Use macOS 13 or later and a Swift 5.9 or later toolchain with the macOS SDK. Ins
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -e .
 swift build --package-path macos-swiftui
 swift test --package-path macos-swiftui
 IMAGEAI_PROJECT_ROOT="$PWD" IMAGEAI_PYTHON="$PWD/.venv/bin/python" \
@@ -38,7 +38,7 @@ State refresh runs while the view is active and visible: every 0.5 seconds durin
 - Active rows are excluded from new bulk generation requests. Interrupted rows show an unknown-outcome message and require explicit confirmation before a fresh single or bulk generation request.
 - Latest image previews, image counts, and **Open image** use saved local output paths. Recovery warnings and row errors are visible.
 
-This is not native feature parity. The PySide and React clients remain the interfaces for attachment editing, detailed per-row generation settings, richer preflight, and release workflow tools. Existing per-row settings and attachments stay in the backend; this native client does not edit them. A retired model in a saved row override must be corrected through a client that exposes that override.
+This is not native feature parity. ImageAI Desktop provides attachment editing, detailed per-row generation settings, richer preflight, and release workflow tools. Existing per-row settings and attachments stay in the backend; this native client does not edit them. A retired model in a saved row override must be corrected through a client that exposes that override.
 
 ## Required macOS acceptance checks
 

@@ -7,12 +7,12 @@ Prepared against `4068a2ba1e33c26f845f6e74ccb295919403cc70`. This section descri
 ### Added
 
 - Shared offline batch preflight with per-row errors and request/image totals.
-- Dry-run-by-default `imageai-batch` CLI, structured sample batch, and Python package metadata with optional desktop/test dependencies.
+- Dry-run-by-default `imageai-batch` CLI, structured sample batch, and Python package metadata with optional test dependencies.
 - Portable batch export with relative session paths, exact image copies, current/historical references, SHA-256 manifest, and paginated contact sheets.
 - Durable pre-call/terminal receipts, idempotent recovery of verified results, atomic saves, and last-valid backups.
 - Interrupted status for uncertain provider outcomes and explicit review before desktop retries.
 - Capability-driven output format/background/reference controls, and OpenAI reference-image edits.
-- Python regression coverage, seven browser smoke scenarios, and a proposed Linux/macOS CI workflow.
+- Python regression coverage, seven browser smoke scenarios, and a Linux/macOS/Windows CI matrix.
 
 ### Changed
 
@@ -22,7 +22,7 @@ Prepared against `4068a2ba1e33c26f845f6e74ccb295919403cc70`. This section descri
 - Queue admission freezes prompts/settings/reference bytes, guards duplicates, counts matching results for missing-only generation, and preserves local quota history when the queue is recreated.
 - Backend state mutation and session changes use explicit locking/lifecycle checks; clients share generation event reduction.
 - React controls respect capabilities, preserve focused drafts during polling, show backend errors, and support preflight/portable export.
-- PySide queue events are delivered on the GUI thread; refresh no longer creates row overrides or erases loaded settings; settings now have a usable sidebar/collapsible row layout.
+- ImageAI Desktop uses Electron for file dialogs, clipboard, session management and gallery exports. The Python backend runs without a GUI toolkit.
 - SwiftUI delegates structured parsing/import to the backend and is updated for RPC errors, selection binding, and bounded polling/startup. Native verification remains required.
 
 ### Fixed
@@ -33,7 +33,7 @@ Prepared against `4068a2ba1e33c26f845f6e74ccb295919403cc70`. This section descri
 - Image/name collisions overwriting exports, incorrect expected image counts, and stale batch previews losing identifiers.
 - Loaded portable images rejected by the local image endpoint, historical references missing from bundles, and malformed receipts blocking restore.
 - Undo reopening already consumed receipts and causing removed output references to reappear on restart.
-- React lockfile incompleteness blocking `npm ci`.
+- React lockfile incompleteness blocking `npm ci` and missing Python resources in packaged Electron builds.
 
 ### Compatibility notes
 

@@ -1,2 +1,2 @@
-# Full desktop and development install. For the headless CLI: pip install -e .
--e .[desktop,test]
+# Development install. For the runtime only: pip install -e .
+-e .[test]

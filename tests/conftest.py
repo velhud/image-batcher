@@ -10,7 +10,6 @@ import pytest
 # backend_server owns a default state at import time, so isolate collection too.
 _COLLECTION_STORE = tempfile.mkdtemp(prefix="imageai-test-collection-")
 os.environ["IMAGEAI_DATA_DIR"] = _COLLECTION_STORE
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 def _cleanup_collection_store():

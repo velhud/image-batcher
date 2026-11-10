@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import secrets
 import hashlib
 import json
 import logging
@@ -163,7 +164,7 @@ class GenerationQueue:
 
     def enqueue(
         self, row: RowData, global_settings: GlobalSettings, *,
-        row_index: int = 1, missing_only: bool = False,
+        row_index: int = 1, missing_only: bool = False, regenerate: bool = False,
     ) -> bool:
         """Admit a snapshot once; False means duplicate or skipped.
 
@@ -192,7 +193,10 @@ class GenerationQueue:
         settings = effective_settings(snapshot, global_settings)
         validate_settings(settings)
         provider = self.providers.get(settings.provider_id)
-        provider.validate_settings(settings, snapshot.attachments)
+        model = provider.validate_settings(settings, snapshot.attachments)
+        if regenerate and not settings.regen_use_same_seed and model and model.capabilities.supports_seed:
+            settings.seed = secrets.randbelow(2 ** 31)
+            settings.random_seed = False
         provider.validate_prompt(generation_prompt(snapshot.prompt, settings))
         requested_settings = settings.to_dict()
         output_dir = self.output_root / snapshot.id

@@ -21,7 +21,7 @@ All three cloud adapters reject the application's legacy fixed-seed and style co
 
 ## Configuration
 
-Set the variables for the provider you use in the process environment or the repository-root `.env`. Existing process environment values take precedence over `.env`. See [environment loading](../app/env.py).
+Set the variables for the provider you use in the process environment, the source checkout’s `.env`, or a `.env` in the ImageAI data directory. Values are resolved in that order at startup. See [environment loading](../app/env.py).
 
 | Variable | Used by | Meaning |
 |---|---|---|

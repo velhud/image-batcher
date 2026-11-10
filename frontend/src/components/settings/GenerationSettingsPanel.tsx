@@ -93,6 +93,10 @@ export function GenerationSettingsPanel({ state }: { state: BackendState }) {
         </select>
       </div>}
 
+      <div className="space-y-2">
+        <p className="text-text-muted text-xs uppercase font-semibold">Shared prompt instructions</p>
+        <TextSetting label="Shared prompt instructions" rows={4} value={gs.prompt_wrapper || ''} onCommit={value => update({ prompt_wrapper: value })} />
+      </div>
       <div className="border-t border-white/5 pt-3 text-xs text-text-muted">
         {caps?.supports_attachments ? `Reference images: up to ${caps.max_attachments} per row. Add them with the paperclip.` : 'This model does not accept reference images.'}
       </div>

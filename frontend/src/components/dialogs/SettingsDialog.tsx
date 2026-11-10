@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/api/client';
+import { desktopBridge } from '@/api/desktop';
+import { runAction } from '@/lib/feedback';
 import { BackendState } from '@/api/types';
 import { Button } from '@/components/common/Button';
 import { useQueryClient } from '@tanstack/react-query';
@@ -15,6 +17,7 @@ export function SettingsDialog({ isOpen, onClose, state }: SettingsDialogProps) 
   const queryClient = useQueryClient();
   const [concurrency, setConcurrency] = useState(2);
   const [rpm, setRpm] = useState(60);
+  const [threshold, setThreshold] = useState(300);
   const [folder, setFolder] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -25,6 +28,7 @@ export function SettingsDialog({ isOpen, onClose, state }: SettingsDialogProps) 
       setError('');
       setConcurrency(state.session.global_settings.concurrency_limit);
       setRpm(state.session.global_settings.rate_limit_rpm);
+      setThreshold(state.session.global_settings.confirm_generate_threshold);
       setFolder(state.session.global_settings.export_folder || "");
     }
   }, [isOpen]);
@@ -35,11 +39,13 @@ export function SettingsDialog({ isOpen, onClose, state }: SettingsDialogProps) 
     setLoading(true);
     setError('');
     try {
-      if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('Concurrency must be a whole number from 1 to 8.');
-      if (!Number.isInteger(rpm) || rpm < 1 || rpm > 500) throw new Error('The rate limit must be a whole number from 1 to 500.');
+      if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw new Error('Concurrency must be a whole number from 1 to 16.');
+      if (!Number.isInteger(rpm) || rpm < 1 || rpm > 6000) throw new Error('The rate limit must be a whole number from 1 to 6000.');
+      if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100000) throw new Error('The confirmation threshold must be a whole number from 1 to 100000.');
       await api.updateGlobalSettings({
         concurrency_limit: concurrency,
         rate_limit_rpm: rpm,
+        confirm_generate_threshold: threshold,
         export_folder: folder || null,
       });
       await queryClient.invalidateQueries({ queryKey: ['state'] });
@@ -68,7 +74,7 @@ export function SettingsDialog({ isOpen, onClose, state }: SettingsDialogProps) 
             <label className="text-sm font-medium text-text-muted">Concurrency Limit (Threads)</label>
             <input 
               type="number" 
-              min={1} max={8}
+              min={1} max={16}
               value={concurrency}
               onChange={e => setConcurrency(parseInt(e.target.value))}
               className="w-full bg-black/20 border border-white/10 rounded-md p-2 text-sm"
@@ -81,11 +87,18 @@ export function SettingsDialog({ isOpen, onClose, state }: SettingsDialogProps) 
             <label className="text-sm font-medium text-text-muted">Rate Limit (Requests per Minute)</label>
             <input 
               type="number" 
-              min={1} max={500}
+              min={1} max={6000}
               value={rpm}
               onChange={e => setRpm(parseInt(e.target.value))}
               className="w-full bg-black/20 border border-white/10 rounded-md p-2 text-sm"
             />
+          </div>
+
+          <div className="space-y-2">
+            <label htmlFor="confirmation-threshold" className="text-sm font-medium text-text-muted">Confirm batches at this many images</label>
+            <input id="confirmation-threshold" type="number" min={1} max={100000}
+              value={Number.isNaN(threshold) ? '' : threshold} onChange={e => setThreshold(e.target.valueAsNumber)}
+              className="w-full bg-black/20 border border-white/10 rounded-md p-2 text-sm" />
           </div>
 
           {/* Export Folder */}
@@ -99,6 +112,10 @@ export function SettingsDialog({ isOpen, onClose, state }: SettingsDialogProps) 
                   placeholder="/Users/name/Pictures/Imagen"
                   className="flex-1 bg-black/20 border border-white/10 rounded-md p-2 text-sm font-mono"
                 />
+                <Button variant="secondary" onClick={() => runAction(async () => {
+                  const selected = await desktopBridge().selectFolder(folder);
+                  if (selected) setFolder(selected);
+                })}>Browse</Button>
             </div>
           </div>
         </div>

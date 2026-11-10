@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from typing import Dict, List
+from typing import List
 
 from app.models import PromptTemplate
 
@@ -19,14 +19,3 @@ def expand_template(template: PromptTemplate) -> List[str]:
             filled = filled.replace("{" + key + "}", str(val))
         prompts.append(filled)
     return prompts
-
-
-def parse_variable_block(block: str) -> Dict[str, List[str]]:
-    """Parse simple block of lines 'key: a, b, c' into variable dict."""
-    variables: Dict[str, List[str]] = {}
-    for line in block.splitlines():
-        if ":" not in line:
-            continue
-        key, vals = line.split(":", 1)
-        variables[key.strip()] = [v.strip() for v in vals.split(",") if v.strip()]
-    return variables

@@ -1,4 +1,4 @@
-"""One event reducer for the desktop and RPC clients."""
+"""Apply generation events to session rows."""
 from __future__ import annotations
 
 import time

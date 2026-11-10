@@ -13,25 +13,19 @@ Use the **Mock provider** to run the complete workflow offline. OpenAI, Google G
 - **Current provider contracts:** GPT Image generation/reference edits, stable Gemini image models, and conservative Azure deployment support. Unsupported or retired selections fail explicitly.
 - **Portable batch export:** relative-path session, exact image bytes, current and historical reference inputs, SHA-256 manifest, and paginated contact sheets. Existing exports are not overwritten.
 - **Headless batches:** a dry-run-by-default CLI and a credential-free example.
-- **Shared frontend behavior:** PySide and React use the same preflight, generation, and export core. The experimental SwiftUI client delegates parsing and imports to the backend.
+- **ImageAI Desktop:** the Electron workspace uses native file dialogs and clipboard, with shared generation, preflight and export through the local backend.
 
 ## Install
 
-Python **3.10 or newer** is required. For the desktop app and complete Python test suite:
+Install **Python 3.10 or newer** and its runtime dependencies from the repository root:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[desktop,test]'
-```
-
-On Windows, activate with `.venv\Scripts\activate` instead. `python -m pip install -r requirements.txt` installs the same development extras.
-
-For CLI/backend use without Qt, install the core package:
-
-```bash
 python -m pip install -e .
 ```
+
+On Windows, activate with `.venv\Scripts\activate`. For the test tools, use `python -m pip install -e '.[test]'`.
 
 ### Offline quick start
 
@@ -53,39 +47,21 @@ imageai-batch \
 
 `python -m app.cli` is equivalent to `imageai-batch`. Each run requires an empty output directory so an earlier run cannot be overwritten. The command prints a JSON summary containing `status`, `images_saved`, `session_path`, and `bundle_path`. Exit codes are **0** for success, **2** for invalid input/configuration, and **1** for a failed, cancelled, or timed-out run.
 
-## Desktop and alternate clients
+## ImageAI Desktop
 
-### PySide desktop
-
-From the repository root:
-
-```bash
-python main.py
-```
-
-Import a batch, select a provider/model, adjust global settings or row overrides, and run **Preflight**. Use Generate Missing for an incomplete batch, or explicitly generate selected rows for a new run. The settings sidebar and row settings show controls supported by the selected model.
-
-Sessions and generated artifacts are stored under `~/.imagen/` by default. Set `IMAGEAI_DATA_DIR` to an absolute directory for an isolated workspace. Do not run multiple app processes against the same data directory; quota and session coordination are local to one process.
-
-### JSON backend and React web client
-
-In one terminal, from the repository root:
-
-```bash
-python -m app.backend_server
-```
-
-In a second terminal, with Node **22.12+** (or another version supported by the checked-in Vite toolchain):
+With the Python environment active and Node **22.12+** installed:
 
 ```bash
 cd frontend
-npm ci --ignore-scripts
-npm run dev:web
+npm ci
+npm run dev
 ```
 
-Open the local URL printed by Vite. The backend defaults to `http://127.0.0.1:8765`. The browser client uses the same local filesystem through the backend; it is not a hosted multiuser service. Local origins on ports 5173 and 4173 are allowed by default. `IMAGEAI_ALLOWED_ORIGINS` accepts additional exact comma-separated origins when another local development origin is needed.
+ImageAI opens its own window and starts the Python backend automatically. Import a batch, adjust global defaults or row overrides, run **Preflight**, then generate the selected rows or use **Generate Missing**. **Open Session** and **Save Session As** use system file dialogs.
 
-For Electron, use a normal `npm ci` with install scripts enabled, followed by `npm run dev`. `npm run build` creates the Electron build/package using the existing electron-builder configuration. Platform-specific packaging and native dialogs remain release acceptance gates.
+Use `npm run build` to package the desktop app. The package includes backend source and requires Python with the runtime dependencies installed. Set `IMAGEAI_PYTHON` to the absolute interpreter path when launching the packaged executable if it cannot find Python on the system path. The [verification guide](docs/VERIFICATION.md) includes a packaged-app smoke test.
+
+Sessions and generated artifacts are stored under `~/.imagen/` by default. Set `IMAGEAI_DATA_DIR` to an absolute directory for an isolated workspace. Run one backend per data directory.
 
 ### Experimental macOS SwiftUI client
 
@@ -93,7 +69,7 @@ See [macos-swiftui/README.md](macos-swiftui/README.md) for the Swift toolchain, 
 
 ## Provider setup
 
-Copy `.env.example` to `.env` and fill the variables for the provider you intend to use:
+Set environment variables for the provider you use, or copy `.env.example` to the source checkout’s `.env`. A packaged app can read a local `.env` in its data directory. Restart ImageAI after changing provider configuration.
 
 | Provider | Configuration | Implemented scope |
 |---|---|---|
@@ -140,7 +116,7 @@ Move the whole folder and open its `session.json` on another installation. A mis
 
 ## Azure logo batches
 
-The existing Azure Logo Batch preset remains available in PySide and React. It selects GPT Image 2, square 1024 output, medium quality, one PNG per prompt, concurrency 1, and an initial local budget of four images per minute. This is an application default, not a statement of your Azure deployment quota.
+The Azure Logo Batch preset is available in ImageAI Desktop. It selects GPT Image 2, square 1024 output, medium quality, one PNG per prompt, concurrency 1, and an initial local budget of four images per minute. This is an application default, not a statement of your Azure deployment quota.
 
 Structured IDs are retained in readable filenames, for example `cat01_prompt0001_q-medium_run01.png`; collisions receive an additional suffix. `generation_log.jsonl` records session runs alongside durable receipts. Generate Missing counts matching saved images, and verification distinguishes successful prompt rows from actual image counts.
 
@@ -166,9 +142,9 @@ npx playwright install chromium
 npm run test:ui
 ```
 
-The Python suite and seven supplied browser scenarios do not require provider credentials. Browser scenarios use intercepted RPC responses; they complement a manual run against the actual backend. See [Verification guide](docs/VERIFICATION.md) for exact acceptance steps, real-provider gates, Electron packaging, and macOS checks.
+The Python suite and browser scenarios use offline fixtures. The desktop smoke test launches the actual Electron package against its bundled backend. See the [verification guide](docs/VERIFICATION.md) for those checks and live provider acceptance.
 
-The CI workflow runs Python tests and the offline demo on Linux/macOS, the browser suite on Linux, and the Swift test/build gate on macOS. Workflow inclusion is not evidence that a remote CI run has already passed.
+CI runs Python tests and the offline demo on Linux, macOS and Windows, the browser suite on Linux, packaged Electron smoke tests on macOS and Windows, and the Swift test/build gate on macOS.
 
 ## Project map
 
@@ -179,8 +155,8 @@ The CI workflow runs Python tests and the offline demo on Linux/macOS, the brows
 | `app/generation_state.py`, `app/batch_service.py` | Shared state reduction and preflight |
 | `app/session_manager.py`, `app/storage.py` | Atomic persistence and receipt recovery |
 | `app/exporter.py` | Ordinary and portable exports |
-| `app/cli.py`, `app/backend_server.py`, `app/ui/` | CLI, local RPC, PySide desktop |
+| `app/cli.py`, `app/backend_server.py` | CLI and local RPC |
 | `frontend/`, `macos-swiftui/` | React/Electron and experimental native clients |
-| `tests/`, `frontend/tests/` | Python regressions and browser contract scenarios |
+| `tests/`, `frontend/tests/` | Python, browser and packaged desktop regressions |
 
 [Architecture](docs/ARCHITECTURE.md) explains lifecycle and persistence invariants. [Research and release direction](docs/RESEARCH.md) records the provider/competitor evidence behind this scope. [CHANGELOG.md](CHANGELOG.md) describes compatibility changes, and [CONTRIBUTING.md](CONTRIBUTING.md) lists contribution requirements. The project is licensed under [MIT](LICENSE).

@@ -84,6 +84,9 @@ async function openWorkspace(options = {}) {
     }
     return route.fulfill({ status, headers: { 'Access-Control-Allow-Origin': '*' }, json: { ok: true, data: result } });
   });
+  await page.addInitScript(() => {
+    window.imageaiDesktop = { selectFolder: async () => '/tmp/imageai-export' };
+  });
   await page.goto(baseUrl);
   await page.getByRole('heading', { name: 'Studio', exact: true }).waitFor();
   return { page, state, calls, close: () => context.close() };

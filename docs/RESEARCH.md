@@ -77,7 +77,7 @@ Portable export publishes a new directory containing `session.json`, generated i
 
 ### Validation is available before cloud work starts
 
-Shared preflight reports per-row settings/reference errors and planned initial request/image counts without contacting a provider. React and PySide expose the relevant workflow; the CLI defaults to dry run and requires `--run` for generation. Structured input validation, shared prompt append, an offline example, and an isolated mock run make the complete workflow demonstrable without credentials. See [batch service](../app/batch_service.py), [CLI](../app/cli.py), and [examples](../examples/).
+Shared preflight reports per-row settings/reference errors and planned initial request/image counts without contacting a provider. ImageAI Desktop exposes the relevant workflow; the CLI defaults to dry run and requires `--run` for generation. Structured input validation, shared prompt append, an offline example, and an isolated mock run make the complete workflow demonstrable without credentials. See [batch service](../app/batch_service.py), [CLI](../app/cli.py), and [examples](../examples/).
 
 Preflight is not an authentication, price, content-policy, or deployment-capacity check. The UI distinguishes local configuration from a remotely tested integration. Unsupported controls are hidden or rejected instead of implying that ignored settings affect the image.
 

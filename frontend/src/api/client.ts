@@ -27,7 +27,7 @@ async function rpcCall<T>(action: string, data: Record<string, any> = {}): Promi
     body: JSON.stringify({ action, data }),
     });
   } catch {
-    const error = new Error('Cannot reach the ImageAI backend at 127.0.0.1:8765. Start it with python -m app.backend_server.');
+    const error = new Error('Cannot reach the ImageAI backend at 127.0.0.1:8765. Check the local Python setup and restart ImageAI.');
     if (action !== 'state' && action !== 'provider_status') reportError(error);
     throw error;
   }
@@ -82,7 +82,7 @@ export const api = {
   deleteRows: (row_ids: string[]) => rpcCall<{ rows: RowDTO[] }>('delete_rows', { row_ids }),
   duplicateRow: (row_id: string) => rpcCall<BackendState>('duplicate_row', { row_id }),
   
-  generateRows: (row_ids: string[]) => rpcCall<{ queued: string[] }>('generate_rows', { row_ids }),
+  generateRows: (row_ids: string[], regenerate = false) => rpcCall<{ queued: string[] }>('generate_rows', { row_ids, ...(regenerate ? { regenerate } : {}) }),
   generateMissing: (row_ids?: string[]) => rpcCall<{ queued: string[] }>('generate_missing', { row_ids }),
   retryFailed: (row_ids?: string[]) => rpcCall<{ queued: string[] }>('retry_failed', { row_ids }),
   preflight: (row_ids?: string[]) => rpcCall<PreflightDTO>('preflight', { row_ids }),
@@ -98,16 +98,11 @@ export const api = {
   verifyBatch: () => rpcCall<BatchVerificationDTO>('verify_batch'),
   generationLog: () => rpcCall<{ rows: Record<string, any>[]; path: string }>('generation_log'),
 
-  selectFolder: () => rpcCall<{ path: string }>('select_folder'),
-  selectImageFile: () => rpcCall<{ path: string; mime: string } | null>('select_image_file'),
-  export: (row_ids: string[], folder: string) => 
-    rpcCall<{ exported: number }>('export', { row_ids, folder }),
+  export: (row_ids: string[], folder: string, image_id?: string) =>
+    rpcCall<{ exported: number }>('export', { row_ids, folder, image_id }),
   exportBundle: (folder: string, row_ids?: string[]) =>
     rpcCall<ExportBundleDTO>('export_bundle', { folder, row_ids }),
 
-  openPath: (path: string) => rpcCall<{ opened: boolean }>('open_path', { path }),
-  copyImage: (path: string) => rpcCall<{ copied: boolean }>('copy_image_to_clipboard', { path }),
-
-  saveTemplate: (template: PromptTemplateDTO) => rpcCall<{ templates: PromptTemplateDTO[] }>('save_template', template),
+  applyTemplate: (template: PromptTemplateDTO) => rpcCall<{ templates: PromptTemplateDTO[] }>('apply_template', template),
   expandTemplate: (template: PromptTemplateDTO) => rpcCall<{ prompts: string[] }>('expand_template', template),
 };

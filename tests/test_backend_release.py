@@ -6,7 +6,7 @@ import pytest
 import requests
 
 from app import backend_server
-from app.models import GeneratedImage
+from app.models import GeneratedImage, RowStatus
 from app.providers.base import BaseProvider
 
 
@@ -101,6 +101,8 @@ def test_rpc_rejects_untrusted_origin_and_bad_envelope(backend):
         denied = requests.post(url, json={'action':'new_session'}, headers={'Origin':'https://unrelated.example'}, timeout=3)
         assert denied.status_code == 403
         assert 'Access-Control-Allow-Origin' not in denied.headers
+        opaque = requests.post(url, json={'action': 'state'}, headers={'Origin': 'null'}, timeout=3)
+        assert opaque.status_code == 403
         malformed = requests.post(url, json=[], timeout=3)
         assert malformed.status_code == 400
         wrong_path = requests.post(url.replace('/rpc','/other'), json={'action':'state'}, timeout=3)
@@ -110,3 +112,42 @@ def test_rpc_rejects_untrusted_origin_and_bad_envelope(backend):
         assert valid.headers['Access-Control-Allow-Origin'] == 'http://localhost:5173'
     finally:
         server.shutdown(); server.server_close(); thread.join(2)
+
+
+
+def test_generate_missing_excludes_interrupted_rows_before_validation(backend):
+    rows = backend.dispatch("add_rows", {"prompts": ["ready", ""]})["rows"]
+    backend.session.rows[1].status = RowStatus.INTERRUPTED
+    result = backend.dispatch("generate_missing", {"row_ids": [row["id"] for row in rows]})
+    assert result["queued"] == [rows[0]["id"]]
+    assert backend.session.rows[1].status == RowStatus.INTERRUPTED
+
+
+def test_regeneration_seed_and_replacement_are_per_run(backend, monkeypatch):
+    row_id = backend.dispatch("add_rows", {"prompts": ["shape"]})["rows"][0]["id"]
+    backend.dispatch("update_row", {"row_id": row_id, "settings": {
+        "seed": 42, "random_seed": False, "regen_use_same_seed": False, "generate_behavior": "replace",
+    }})
+    monkeypatch.setattr("app.queue_manager.secrets.randbelow", lambda limit: 1234)
+    action = {"row_ids": [row_id]}
+    for expected_seed, extra in ((42, {}), (1234, {"regenerate": True})):
+        assert backend.dispatch("generate_rows", {**action, **extra})["queued"] == [row_id]
+        deadline = time.monotonic() + 4
+        while not backend.queue.is_idle() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        row = backend.session.rows[0]
+        assert row.status == RowStatus.COMPLETED
+        assert len(row.images) == 1
+        assert row.images[0].metadata["seed"] == expected_seed
+        assert row.settings.seed == 42
+
+
+def test_template_application_adds_only_current_expansion_and_can_be_undone(backend):
+    data = {"name": "Shape", "template": "A {shape}", "variables": {"shape": ["square", "triangle"]}}
+    assert backend.dispatch("expand_template", data)["prompts"] == ["A square", "A triangle"]
+    backend.dispatch("apply_template", {**data, "variables": {"shape": ["hexagon"]}})
+    assert [row.prompt for row in backend.session.rows] == ["A hexagon"]
+    assert backend.session.templates[0].variables == {"shape": ["hexagon"]}
+    backend.dispatch("undo", {})
+    assert backend.session.rows == []
+    assert backend.session.templates == []
