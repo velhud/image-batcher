@@ -98,7 +98,9 @@ class GenerationQueue:
         self, providers: ProviderRegistry, output_root: Path, concurrency: int, rpm: int = 60
     ) -> None:
         self.providers = providers
-        self.output_root = Path(output_root).resolve()
+        root = Path(output_root)
+        root.mkdir(parents=True, exist_ok=True)
+        self.output_root = root.resolve(strict=True)
         self.concurrency = max(1, int(concurrency))
         self.listeners: List[Callable[[str, str, Dict], None]] = []
         self.queue: Queue[GenerationJob | None] = Queue()

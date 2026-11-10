@@ -120,7 +120,7 @@ def _run(rows: list[RowData], settings: GlobalSettings, registry: ProviderRegist
     previous_data_dir = os.environ.get("IMAGEAI_DATA_DIR")
     os.environ["IMAGEAI_DATA_DIR"] = str(output / "state")
     queue = None
-    started = time.monotonic()
+    started = time.perf_counter()
     persistence_errors: list[str] = []
     try:
         manager = SessionManager()
@@ -155,13 +155,13 @@ def _run(rows: list[RowData], settings: GlobalSettings, registry: ProviderRegist
         deadline = started + timeout
         try:
             for number, row in enumerate(rows, start=1):
-                if time.monotonic() >= deadline or persistence_errors:
-                    timed_out = time.monotonic() >= deadline
+                timed_out = time.perf_counter() >= deadline
+                if timed_out or persistence_errors:
                     break
                 queue.enqueue(row, settings, row_index=number)
             with condition:
                 while len(terminal_rows) != len(rows) and not persistence_errors and not timed_out:
-                    remaining = deadline - time.monotonic()
+                    remaining = deadline - time.perf_counter()
                     if remaining <= 0:
                         timed_out = True
                         break
@@ -199,7 +199,7 @@ def _run(rows: list[RowData], settings: GlobalSettings, registry: ProviderRegist
                 "images_saved": sum(len(row.images) for row in rows), "failures": failures,
                 "session_path": str(session_path), "bundle_path": bundle["path"] if bundle else None,
                 "provider_work_stopped": stopped, "errors": list(dict.fromkeys(persistence_errors)),
-                "duration_seconds": round(time.monotonic() - started, 3),
+                "duration_seconds": round(time.perf_counter() - started, 3),
             }
             return (0 if status == "completed" else 1), summary
     finally:
