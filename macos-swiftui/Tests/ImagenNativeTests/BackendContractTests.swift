@@ -8,8 +8,8 @@ final class BackendContractTests: XCTestCase {
       "provider_id":"mock", "model_id":"mock-standard", "size_preset":"Square 1024",
       "custom_size":null, "num_images":1, "style_preset":"None", "negative_prompt":"",
       "seed":null, "random_seed":true, "quality":5, "safety":2, "export_folder":null,
-      "naming_pattern":"{index}_{slug}.png", "concurrency_limit":2, "theme":"system",
-      "prompt_highlighting":false, "generate_behavior":"keep", "regen_use_same_seed":true,
+      "naming_pattern":"{index}_{slug}.png", "concurrency_limit":2,
+      "generate_behavior":"keep", "regen_use_same_seed":true,
       "confirm_generate_threshold":300, "rate_limit_rpm":60, "thinking_budget":0,
       "thinking_level":"high", "prompt_wrapper":"", "output_format":"png", "background":"auto"
     }

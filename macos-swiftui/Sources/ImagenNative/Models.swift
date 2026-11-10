@@ -71,8 +71,6 @@ struct GlobalSettingsDTO: Codable {
     var export_folder: String?
     var naming_pattern: String
     var concurrency_limit: Int
-    var theme: String
-    var prompt_highlighting: Bool
     var generate_behavior: String
     var regen_use_same_seed: Bool
     var confirm_generate_threshold: Int
@@ -94,7 +92,6 @@ struct GlobalSettingsDTO: Codable {
             "random_seed": .bool(random_seed), "quality": .integer(quality), "safety": .integer(safety),
             "export_folder": export_folder.map { .string($0) } ?? .null,
             "naming_pattern": .string(naming_pattern), "concurrency_limit": .integer(concurrency_limit),
-            "theme": .string(theme), "prompt_highlighting": .bool(prompt_highlighting),
             "generate_behavior": .string(generate_behavior), "regen_use_same_seed": .bool(regen_use_same_seed),
             "confirm_generate_threshold": .integer(confirm_generate_threshold), "rate_limit_rpm": .integer(rate_limit_rpm),
             "thinking_budget": .integer(thinking_budget ?? 0), "thinking_level": .string(thinking_level ?? "high"),

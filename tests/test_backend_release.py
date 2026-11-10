@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from http.server import HTTPServer
@@ -151,3 +152,18 @@ def test_template_application_adds_only_current_expansion_and_can_be_undone(back
     backend.dispatch("undo", {})
     assert backend.session.rows == []
     assert backend.session.templates == []
+
+
+
+def test_legacy_session_loads_without_retaining_unused_appearance_settings(backend, tmp_path):
+    older = backend.session.to_dict()
+    older["version"] = "1.0"
+    older["global_settings"].update(theme="light", prompt_highlighting=True, num_images=2)
+    path = tmp_path / "old-session.json"
+    path.write_text(json.dumps(older), encoding="utf-8")
+
+    current = backend.dispatch("load_session", {"path": str(path)})["session"]
+    assert current["global_settings"]["num_images"] == 2
+    assert "theme" not in current["global_settings"]
+    assert "prompt_highlighting" not in current["global_settings"]
+    assert json.loads(path.read_text(encoding="utf-8")) == older

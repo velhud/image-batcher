@@ -56,8 +56,6 @@ export interface GlobalSettingsDTO {
   export_folder?: string | null;
   naming_pattern: string;
   concurrency_limit: number;
-  theme: string;
-  prompt_highlighting: boolean;
   generate_behavior: string;
   regen_use_same_seed: boolean;
   confirm_generate_threshold: number;

@@ -186,8 +186,6 @@ class GlobalSettings:
     export_folder: Optional[str] = None
     naming_pattern: str = "{index}_{slug}.png"
     concurrency_limit: int = 2
-    theme: str = "system"
-    prompt_highlighting: bool = False
     generate_behavior: str = "keep"  # keep or replace previous images
     regen_use_same_seed: bool = True
     confirm_generate_threshold: int = 300
@@ -203,7 +201,11 @@ class GlobalSettings:
 
     @staticmethod
     def from_dict(data: Dict) -> "GlobalSettings":
-        return GlobalSettings(**data)
+        # Older sessions include appearance preferences from the retired client.
+        current = dict(data)
+        current.pop("theme", None)
+        current.pop("prompt_highlighting", None)
+        return GlobalSettings(**current)
 
 
 @dataclass
@@ -443,7 +445,7 @@ def validate_settings(settings: GlobalSettings) -> None:
     for name in ("provider_id", "model_id", "naming_pattern"):
         if not getattr(settings, name).strip():
             raise ValueError(f"{name} cannot be empty")
-    for name in ("random_seed", "prompt_highlighting", "regen_use_same_seed"):
+    for name in ("random_seed", "regen_use_same_seed"):
         if not isinstance(getattr(settings, name), bool):
             raise ValueError(f"{name} must be true or false")
     if settings.generate_behavior not in {"keep", "replace"}:

@@ -34,8 +34,8 @@ function fixture() {
     supports_attachments: false, max_attachments: 0, supports_custom_size: true, output_formats: ['png'], supports_background: false, quality_options: [], size_presets: sizes };
   return {
     session: { id: 'test-session', global_settings: { provider_id: 'mock', model_id: 'mock-standard', size_preset: 'Square 1024', custom_size: null, num_images: 1,
-      style_preset: 'None', negative_prompt: '', seed: null, random_seed: true, quality: 5, safety: 2, naming_pattern: '{index}_{slug}.png', concurrency_limit: 2, theme: 'dark',
-      prompt_highlighting: false, generate_behavior: 'keep', regen_use_same_seed: true, confirm_generate_threshold: 300, rate_limit_rpm: 60,
+      style_preset: 'None', negative_prompt: '', seed: null, random_seed: true, quality: 5, safety: 2, naming_pattern: '{index}_{slug}.png', concurrency_limit: 2,
+      generate_behavior: 'keep', regen_use_same_seed: true, confirm_generate_threshold: 300, rate_limit_rpm: 60,
       thinking_budget: 0, thinking_level: 'high', prompt_wrapper: '', output_format: 'png', background: 'auto' },
       templates: [], rows: [{ id: 'row-1', prompt: 'An amber glass bottle', prompt_id: 'bottle-01', category_id: 'catalogue', source_metadata: {}, status: 'Idle',
         error_message: '', selected: false, settings: {}, attachments: [], images: [], tags: [] }] },
