@@ -12,6 +12,7 @@ Prepared against `4068a2ba1e33c26f845f6e74ccb295919403cc70`. This section descri
 - Durable pre-call/terminal receipts, idempotent recovery of verified results, atomic saves, and last-valid backups.
 - Interrupted status for uncertain provider outcomes and explicit review before desktop retries.
 - Capability-driven output format/background/reference controls, and OpenAI reference-image edits.
+- Review resolved requests, run a one-image sample, and inspect each saved image’s original request and provenance.
 - Python regression coverage, seven browser smoke scenarios, and a Linux/macOS/Windows CI matrix.
 
 ### Changed
@@ -23,7 +24,7 @@ Prepared against `4068a2ba1e33c26f845f6e74ccb295919403cc70`. This section descri
 - Backend state mutation and session changes use explicit locking/lifecycle checks; clients share generation event reduction.
 - React controls respect capabilities, preserve focused drafts during polling, show backend errors, and support preflight/portable export.
 - ImageAI Desktop uses Electron for file dialogs, clipboard, session management and gallery exports. The Python backend runs without a GUI toolkit.
-- SwiftUI delegates structured parsing/import to the backend and is updated for RPC errors, selection binding, and bounded polling/startup. Native verification remains required.
+- The desktop app owns its backend and can reconnect to the saved workspace after the process exits.
 
 ### Fixed
 

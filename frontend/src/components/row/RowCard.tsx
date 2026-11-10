@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { GlobalSettingsDTO, ProviderInfo, RowDTO } from '@/api/types';
+import { GlobalSettingsDTO, ProviderInfo, RowDTO, PreflightDTO } from '@/api/types';
 import { api, imageUrl } from '@/api/client';
 import { copyImage, copyText, desktopBridge } from '@/api/desktop';
 import { Badge } from '@/components/common/Badge';
@@ -7,6 +7,7 @@ import { Button } from '@/components/common/Button';
 import { Play, Trash2, Copy, Image as ImageIcon, Settings2, FolderOpen, StopCircle, Files, Paperclip, XCircle, Download } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { RowSettingsOverride } from './RowSettingsOverride';
+import { SampleDialog } from '@/components/dialogs/SampleDialog';
 import { ImageLightbox } from '@/components/dialogs/ImageLightbox';
 import { effectiveRowSettings, modelForSettings, qualityLabel } from '@/lib/capabilities';
 import { runAction } from '@/lib/feedback';
@@ -30,6 +31,8 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
   const [tags, setTags] = useState((row.tags || []).join(", "));
   const [showSettings, setShowSettings] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [sample, setSample] = useState<PreflightDTO | null>(null);
+  const [checkingSample, setCheckingSample] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   
   const queryClient = useQueryClient();
@@ -54,6 +57,28 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
     if (row.status === 'Interrupted' && !confirm('This request was interrupted and may have completed at the provider. Start a new request for this row?')) return;
     await api.generateRows([row.id], row.images.length > 0);
     queryClient.invalidateQueries({ queryKey: ['state'] }); 
+  };
+  const reviewSample = async () => {
+    setCheckingSample(true);
+    try {
+      if (prompt !== row.prompt) await api.updateRow(row.id, { prompt });
+      setSample(await api.preflightSample(row.id));
+    } finally {
+      setCheckingSample(false);
+    }
+  };
+  const generateSample = async () => {
+    setCheckingSample(true);
+    try {
+      await api.generateSample(row.id);
+      await queryClient.invalidateQueries({ queryKey: ['state'] });
+      setSample(null);
+    } catch (error) {
+      setSample(null);
+      throw error;
+    } finally {
+      setCheckingSample(false);
+    }
   };
   const handleStop = async () => { await api.cancelRow(row.id); await queryClient.invalidateQueries({ queryKey: ['state'] }); };
   const handleDelete = async () => { if (confirm("Delete?")) { await api.deleteRows([row.id]); queryClient.invalidateQueries({ queryKey: ['state'] }); }};
@@ -112,7 +137,7 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
             <div className="flex items-center justify-between">
                 <div className="flex gap-2 items-center">
                     <Badge status={row.status} />
-                    {row.images.length > 0 && <span className="text-xs bg-white/10 px-1.5 py-0.5 rounded text-text-muted">{row.images.length} images</span>}
+                    {row.images.length > 0 && <span className="text-xs bg-white/10 px-1.5 py-0.5 rounded text-text-muted">{row.images.length} {row.images.length === 1 ? 'image' : 'images'}</span>}
                     {(row.category_id || row.prompt_id) && (
                       <span className="text-xs bg-cyan-400/10 text-cyan-200 border border-cyan-400/20 px-1.5 py-0.5 rounded">
                         {[row.category_id, row.prompt_id].filter(Boolean).join(" / ")}
@@ -191,6 +216,9 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
                     </Button>
                 )}
                 
+                {!busy && row.status !== 'Interrupted' && <Button size="sm" variant="secondary" disabled={checkingSample} onClick={() => runAction(reviewSample)}>
+                    Review Sample
+                </Button>}
                 <div className="h-4 w-px bg-white/10 mx-1" />
 
                 <Button size="sm" variant={showSettings ? "secondary" : "ghost"} onClick={() => setShowSettings(!showSettings)} title="Row Settings">
@@ -263,6 +291,9 @@ export function RowCard({ row, index, globalSettings, providers }: RowCardProps)
         </div>
       </div>
     </div>
+
+    {sample && <SampleDialog report={sample} busy={checkingSample} onClose={() => setSample(null)}
+      onGenerate={() => runAction(generateSample)} />}
 
     {/* Lightbox Portal */}
     {lightboxIndex !== null && (

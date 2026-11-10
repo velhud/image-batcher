@@ -57,15 +57,11 @@ npm ci
 npm run dev
 ```
 
-ImageAI opens its own window and starts the Python backend automatically. Import a batch, adjust global defaults or row overrides, run **Preflight**, then generate the selected rows or use **Generate Missing**. **Open Session** and **Save Session As** use system file dialogs.
+ImageAI opens its own window and starts a local Python backend automatically. Import a batch, adjust global defaults or row overrides, and use **Preflight** to inspect resolved requests. Use **Review Sample** on a row to generate one image. **Generate Missing** counts a matching sample toward the batch target. Open **Result Details** in the gallery to inspect the recorded prompt, settings and file identity before export. **Open Session** and **Save Session As** use system file dialogs.
 
 Use `npm run build` to package the desktop app. The package includes backend source and requires Python with the runtime dependencies installed. Set `IMAGEAI_PYTHON` to the absolute interpreter path when launching the packaged executable if it cannot find Python on the system path. The [verification guide](docs/VERIFICATION.md) includes a packaged-app smoke test.
 
 Sessions and generated artifacts are stored under `~/.imagen/` by default. Set `IMAGEAI_DATA_DIR` to an absolute directory for an isolated workspace. Run one backend per data directory.
-
-### Experimental macOS SwiftUI client
-
-See [macos-swiftui/README.md](macos-swiftui/README.md) for the Swift toolchain, startup, and native test commands. Its source is included in this candidate, but macOS compilation and native interaction must be verified on a Mac before publishing it as supported.
 
 ## Provider setup
 
@@ -136,15 +132,13 @@ The utility produces CSV/JSON/JSONL batches, per-category CSVs, an ImageAI sessi
 python -m pytest -q
 cd frontend
 npm ci --ignore-scripts
-npm run typecheck
-npm run build:web
 npx playwright install chromium
 npm run test:ui
 ```
 
 The Python suite and browser scenarios use offline fixtures. The desktop smoke test launches the actual Electron package against its bundled backend. See the [verification guide](docs/VERIFICATION.md) for those checks and live provider acceptance.
 
-CI runs Python tests and the offline demo on Linux, macOS and Windows, the browser suite on Linux, packaged Electron smoke tests on macOS and Windows, and the Swift test/build gate on macOS.
+CI runs Python tests and the offline demo on Linux, macOS and Windows, renderer smoke tests on Linux, and packaged Electron smoke tests on macOS and Windows.
 
 ## Project map
 
@@ -156,7 +150,7 @@ CI runs Python tests and the offline demo on Linux, macOS and Windows, the brows
 | `app/session_manager.py`, `app/storage.py` | Atomic persistence and receipt recovery |
 | `app/exporter.py` | Ordinary and portable exports |
 | `app/cli.py`, `app/backend_server.py` | CLI and local RPC |
-| `frontend/`, `macos-swiftui/` | React/Electron and experimental native clients |
+| `frontend/` | ImageAI Desktop renderer and Electron application |
 | `tests/`, `frontend/tests/` | Python, browser and packaged desktop regressions |
 
 [Architecture](docs/ARCHITECTURE.md) explains lifecycle and persistence invariants. [Research and release direction](docs/RESEARCH.md) records the provider/competitor evidence behind this scope. [CHANGELOG.md](CHANGELOG.md) describes compatibility changes, and [CONTRIBUTING.md](CONTRIBUTING.md) lists contribution requirements. The project is licensed under [MIT](LICENSE).

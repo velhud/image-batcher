@@ -185,6 +185,8 @@ export interface PreflightRowDTO {
   provider: string;
   model: string;
   requested_images: number;
+  category_id?: string;
+  request?: { prompt: string; size: string; avoid: string; references: string[] };
   errors: string[];
 }
 

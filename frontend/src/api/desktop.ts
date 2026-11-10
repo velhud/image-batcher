@@ -1,4 +1,6 @@
 export interface DesktopBridge {
+  backendOrigin(): Promise<string>;
+  reconnect(): Promise<string>;
   openSession(): Promise<string | null>;
   saveSession(): Promise<string | null>;
   selectFolder(defaultPath?: string | null): Promise<string | null>;
@@ -21,11 +23,7 @@ export function desktopBridge(): DesktopBridge {
 }
 
 export async function copyText(text: string): Promise<void> {
-  if (window.imageaiDesktop) {
-    await window.imageaiDesktop.copyText(text);
-  } else {
-    await navigator.clipboard.writeText(text);
-  }
+  await desktopBridge().copyText(text);
 }
 
 export async function copyImage(url: string): Promise<void> {

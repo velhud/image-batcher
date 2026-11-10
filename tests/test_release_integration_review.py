@@ -56,10 +56,10 @@ def test_http_image_viewer_serves_loaded_portable_bundle_images(backend, tmp_pat
     state, module = backend
     bundle = tmp_path / "portable-batch"
     bundle.mkdir()
-    image_path = bundle / "image.png"
+    image_path = bundle / "image%20.png"
     Image.new("RGB", (8, 8), "navy").save(image_path)
     session = SessionData("portable-session", GlobalSettings(), [
-        RowData("row", prompt="logo", images=[ImageResult("image", "row", "image.png")]),
+        RowData("row", prompt="logo", images=[ImageResult("image", "row", image_path.name)]),
     ])
     session_path = bundle / "session.json"
     session_path.write_text(json.dumps(session.to_dict()))
@@ -111,6 +111,19 @@ def test_portable_bundle_preserves_frozen_reference_for_historical_result(tmp_pa
     stored_reference = exported / reference["path"]
     assert stored_reference.is_file(), "The original generation reference was dropped from the portable batch"
     assert stored_reference.read_bytes() == historic.read_bytes()
+
+    from shutil import copytree
+    from app.session_manager import SessionManager
+
+    relocated = copytree(exported, tmp_path / "relocated")
+    historic.unlink()
+    reopened = SessionManager.read(relocated / "session.json")
+    frozen = Path(reopened.rows[0].images[0].metadata["reference_images"][0]["path"])
+    assert frozen.is_relative_to(relocated)
+    reexport = ImageExporter("{index}_{slug}.png").export_bundle(reopened, tmp_path / "reexport")
+    assert reexport["missing"] == []
+    copied_reference = Path(reexport["path"]) / reference["path"]
+    assert copied_reference.read_bytes() == frozen.read_bytes()
 
 
 @pytest.mark.parametrize("bad_receipt", [[], {"schema_version": 1, "session_id": "receipt-session", "row_id": "row", "payload": []}])

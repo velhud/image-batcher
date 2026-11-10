@@ -3,6 +3,7 @@ import { BackendState, BatchVerificationDTO, ExportBundleDTO, PreflightDTO } fro
 import { api } from '@/api/client';
 import { desktopBridge } from '@/api/desktop';
 import { Button } from '@/components/common/Button';
+import { RequestPreview } from '@/components/common/RequestPreview';
 import { useQueryClient } from '@tanstack/react-query';
 import { CheckSquare, Square, Trash2, Play, Download, PlusSquare, StopCircle, ClipboardCheck, PackageOpen, X } from 'lucide-react';
 import { runAction } from '@/lib/feedback';
@@ -90,6 +91,15 @@ export function Footer({ state }: { state: BackendState }) {
             {row.prompt_id || row.row_id}: {row.errors.join('; ')}
           </li>)}
         </ul>
+        {preflight.rows.some(row => row.request) && <details className="mt-2">
+          <summary className="cursor-pointer text-text-main">Review checked requests</summary>
+          <div className="mt-2 space-y-2">
+            {preflight.rows.map((row, index) => <details key={row.row_id} className="rounded border border-white/10 px-3 py-2">
+              <summary className="cursor-pointer">{[row.category_id, row.prompt_id].filter(Boolean).join(' / ') || `Row ${index + 1}`}</summary>
+              <RequestPreview row={row} />
+            </details>)}
+          </div>
+        </details>}
       </>}
       {exported && <>
         <p className={exported.missing.length ? 'text-amber-200' : 'text-emerald-200'}>Portable export: {exported.exported} images · {exported.missing.length} missing files</p>

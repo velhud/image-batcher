@@ -20,10 +20,10 @@ Use `IMAGEAI_DATA_DIR` for a disposable workspace during manual tests. The mock 
 - Treat an ambiguous paid request as an uncertain outcome. Do not add automatic retries for transport failures without provider-supported idempotency and a verified contract.
 - Maintain cancellation and shutdown invariants: no provider call after pending cancellation, no lost late result, no unbounded UI wait, and no stale callback mutating another session.
 - Retain atomic saves, valid backup recovery, receipt idempotence, non-overwriting output publication, and export hash checks.
-- Keep parsing and generation state rules in the Python core so alternate clients do not grow conflicting implementations.
+- Keep parsing and generation state rules in the Python core so the desktop app and CLI use the same behavior.
 - Add focused regressions for a bug's observable failure. A mocked provider test should assert the wire contract and artifact behavior, not merely repeat implementation logic.
 - Use primary provider documentation with a verification date when changing models or capabilities. Live account tests are a separate gate from offline contract tests.
 
-For frontend changes, run `npm ci --ignore-scripts`, `npm run typecheck`, `npm run build:web`, and the supplied browser suite after installing Playwright Chromium. Electron packaging must also be exercised on the affected platform. SwiftUI changes require the native Mac test/build gates.
+For desktop changes, run `npm ci`, install Playwright Chromium, and run `npm run test:ui`. Package Electron and run `npm run test:desktop` on the affected platforms.
 
 In a pull request, explain the user-visible problem, resulting behavior, evidence of validation, and any gate still outstanding. Preserve existing session compatibility unless the change includes an explicit migration plan. Use [SECURITY.md](SECURITY.md) for reporting a security issue.

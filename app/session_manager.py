@@ -79,13 +79,26 @@ class SessionManager:
         except (TypeError, KeyError, AttributeError) as exc:
             raise ValueError(f"Invalid session structure: {exc}") from exc
         validate_session(candidate)
+        directory = path.parent.resolve()
         for row in candidate.rows:
             if row.status in {RowStatus.QUEUED, RowStatus.GENERATING}:
                 row.status = RowStatus.INTERRUPTED
                 row.error_message = "Previous run was interrupted. Review saved images before explicitly generating again."
             for item in [*row.images, *row.attachments]:
                 if item.file_path and not Path(item.file_path).is_absolute():
-                    item.file_path = str((path.parent / item.file_path).resolve())
+                    item.file_path = str((directory / item.file_path).resolve())
+            for image in row.images:
+                references = image.metadata.get("reference_images")
+                if not isinstance(references, list):
+                    continue
+                for reference in references:
+                    relative = reference.get("path") if isinstance(reference, dict) else None
+                    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+                        continue
+                    resolved = (directory / relative).resolve()
+                    if not resolved.is_relative_to(directory):
+                        raise ValueError("A portable generation reference escapes its session folder.")
+                    reference["path"] = str(resolved)
         return candidate
 
     def autosave(self) -> Path:

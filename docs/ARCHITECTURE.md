@@ -1,6 +1,6 @@
 # Architecture
 
-ImageAI is a local batch workspace built around one Python generation core. The desktop, command line and RPC clients share validation, provider adapters, queue semantics, persisted image metadata and export behavior. The application records what it requested and what it received; it does not automatically repeat a paid request whose outcome is uncertain.
+ImageAI is a local batch workspace built around one Python generation core. The desktop application and CLI share validation, provider adapters, queue semantics, persisted image metadata and export behavior. The application records what it requested and what it received; it does not automatically repeat a paid request whose outcome is uncertain.
 
 This document describes the implementation in this repository. Provider availability and account quotas are separate from the local application contract.
 
@@ -8,9 +8,8 @@ This document describes the implementation in this repository. Provider availabi
 
 | Surface or component | Source | Responsibility |
 | --- | --- | --- |
-| Local RPC backend | [`app/backend_server.py`](../app/backend_server.py) | Owns session mutation, validation, queue admission, file access and export for the desktop clients. Binds to loopback. |
+| Local RPC backend | [`app/backend_server.py`](../app/backend_server.py) | Owns session mutation, validation, queue admission, file access and export for the desktop app. Electron starts it on an available loopback port and waits for its readiness signal. |
 | React/Electron | [`frontend/src`](../frontend/src), [`frontend/electron`](../frontend/electron) | Provides the primary desktop workspace and its isolated native file/clipboard bridge. The packaged app starts the Python RPC backend. |
-| SwiftUI client | [`macos-swiftui`](../macos-swiftui) | Experimental native macOS client for the same RPC contract. It has a smaller interface than the primary desktop app and requires its own macOS qualification. |
 | Headless CLI | [`app/cli.py`](../app/cli.py) | Uses the shared Python core directly. Defaults to network-free preflight; `--run` explicitly starts generation. Does not import the HTTP server or restore an old session. |
 | Shared model and preflight | [`app/models.py`](../app/models.py), [`app/batch_service.py`](../app/batch_service.py) | Validates settings, derives row overrides, checks provider capabilities and reports planned images and initial request counts. |
 | Queue and rate limiter | [`app/queue_manager.py`](../app/queue_manager.py), [`app/scheduler.py`](../app/scheduler.py) | Own admission, immutable jobs, concurrency, cancellation, result registration, receipts and local quota scheduling. |
@@ -45,7 +44,7 @@ Each admitted job has a new `job_id`. Its image metadata records:
 - Frozen reference identities and output SHA-256 hashes.
 - Provider request identifiers, usage and response information when returned by the adapter.
 
-A `generation_fingerprint` hashes the prompt, generation controls, provider/model and reference bytes. It excludes the requested image count and interface/export controls. Increasing a target from two images to four can reuse the two matching results; changing the prompt or reference bytes produces a different identity.
+A `generation_fingerprint` hashes the prompt, generation controls, provider/model and reference bytes. It excludes the requested image count and interface/export controls. A one-image sample keeps earlier results and counts toward the target when its fingerprint matches. Increasing a target from two images to four can reuse the two matching results; changing the prompt or reference bytes produces a different identity.
 
 The fingerprint identifies retained inputs. It is not a promise that a remote model will reproduce identical pixels, and it is not a provider-side idempotency key.
 
@@ -92,7 +91,7 @@ The shared HTTP transport uses bounded connect/read timeouts and disables redire
 
 The reducer maps an `outcome_unknown` result to `Interrupted`. Such a row is excluded from bulk missing-only/retry behavior. The user must review the result and explicitly request another generation.
 
-The Electron client asks for explicit confirmation before regenerating an interrupted row, including from a selected or full batch. The SwiftUI client has a corresponding confirmation path. These interface confirmations do not change the queue's rule that missing-only work must never replay an interrupted request.
+The Electron client asks for explicit confirmation before regenerating an interrupted row, including from a selected or full batch. These interface confirmations do not change the queue's rule that missing-only work must never replay an interrupted request.
 
 Provider catalogs are bounded declarations in source, not remote model discovery. Capability validation controls model options and reference support. Gemini dimensions select supported aspect ratios and resolution tiers; actual saved raster dimensions and format are recorded from the result.
 

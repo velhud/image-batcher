@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 export function useHotkeys(keyCombo: string, callback: (e: KeyboardEvent) => void) {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return;
       // Parse key combo (very basic parser for now)
       const keys = keyCombo.split('+').map(k => k.trim().toLowerCase());
       const mainKey = keys[keys.length - 1];

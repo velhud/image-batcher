@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, net, protocol, shell } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
 import { stat } from 'node:fs/promises';
-import { spawn, ChildProcess } from 'node:child_process';
+import { DesktopBackend } from './backend';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -11,35 +11,15 @@ const desktopOrigin = 'imageai://desktop';
 const isDev = !app.isPackaged;
 const rendererUrl = process.env.VITE_DEV_SERVER_URL || desktopOrigin;
 const sessionFilters = [{ name: 'ImageAI session', extensions: ['json'] }];
-let pythonProcess: ChildProcess | null = null;
+const backend = new DesktopBackend(
+  isDev ? path.resolve(moduleDirectory, '../..') : path.join(process.resourcesPath, 'backend'),
+  isDev && process.env.VITE_DEV_SERVER_URL ? new URL(rendererUrl).origin : desktopOrigin,
+);
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'imageai',
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
 }]);
-
-function startPythonBackend() {
-  const projectRoot = isDev
-    ? path.resolve(moduleDirectory, '../..')
-    : path.join(process.resourcesPath, 'backend');
-  const python = process.env.IMAGEAI_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
-  const appOrigin = isDev && process.env.VITE_DEV_SERVER_URL ? new URL(rendererUrl).origin : desktopOrigin;
-  const allowedOrigins = [process.env.IMAGEAI_ALLOWED_ORIGINS, appOrigin].filter(Boolean).join(',');
-  const child = spawn(python, ['-m', 'app.backend_server'], {
-    cwd: projectRoot,
-    env: { ...process.env, IMAGEAI_ALLOWED_ORIGINS: allowedOrigins },
-    stdio: 'inherit',
-    windowsHide: true,
-  });
-  pythonProcess = child;
-  child.on('error', error => {
-    console.error('Could not start ImageAI Python backend. Check IMAGEAI_PYTHON and the desktop dependencies.', error);
-  });
-  child.on('exit', (code, signal) => {
-    console.log('ImageAI Python backend exited', { code, signal });
-    if (pythonProcess === child) pythonProcess = null;
-  });
-}
 
 function trustedWindow(event: IpcMainInvokeEvent): BrowserWindow {
   const window = BrowserWindow.fromWebContents(event.sender);
@@ -53,6 +33,14 @@ function trustedWindow(event: IpcMainInvokeEvent): BrowserWindow {
 }
 
 function registerDesktopActions() {
+  ipcMain.handle('desktop:backend-origin', event => {
+    trustedWindow(event);
+    return backend.origin();
+  });
+  ipcMain.handle('desktop:reconnect', event => {
+    trustedWindow(event);
+    return backend.start();
+  });
   ipcMain.handle('desktop:open-session', async event => {
     const result = await dialog.showOpenDialog(trustedWindow(event), {
       title: 'Open ImageAI session', properties: ['openFile'], filters: sessionFilters,
@@ -142,7 +130,7 @@ if (!app.requestSingleInstanceLock()) {
       return net.fetch(pathToFileURL(file).href);
     });
     registerDesktopActions();
-    startPythonBackend();
+    void backend.start().catch(error => console.error(error.message));
     createWindow();
   });
   app.on('activate', () => {
@@ -151,5 +139,5 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
   });
-  app.on('will-quit', () => pythonProcess?.kill());
+  app.on('will-quit', () => backend.stop());
 }

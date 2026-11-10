@@ -13,21 +13,23 @@ import {
   PromptTemplateDTO
 } from './types';
 import { reportError } from '@/lib/feedback';
+import { desktopBridge } from './desktop';
 
-export const RPC_BASE_URL = 'http://127.0.0.1:8765';
-const RPC_ENDPOINT = `${RPC_BASE_URL}/rpc`;
-export const imageUrl = (path: string) => `${RPC_BASE_URL}/images?path=${encodeURIComponent(path)}`;
+let backendOrigin = '';
+export const imageUrl = (path: string) => `${backendOrigin}/images?path=${encodeURIComponent(path)}`;
 
 async function rpcCall<T>(action: string, data: Record<string, any> = {}): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(RPC_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, data }),
+    backendOrigin = await desktopBridge().backendOrigin();
+    response = await fetch(`${backendOrigin}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, data }),
+      signal: action === 'state' ? AbortSignal.timeout(8000) : undefined,
     });
   } catch {
-    const error = new Error('Cannot reach the ImageAI backend at 127.0.0.1:8765. Check the local Python setup and restart ImageAI.');
+    const error = new Error('Cannot reach the ImageAI backend. Use Reconnect to reopen the workspace.');
     if (action !== 'state' && action !== 'provider_status') reportError(error);
     throw error;
   }
@@ -83,6 +85,8 @@ export const api = {
   duplicateRow: (row_id: string) => rpcCall<BackendState>('duplicate_row', { row_id }),
   
   generateRows: (row_ids: string[], regenerate = false) => rpcCall<{ queued: string[] }>('generate_rows', { row_ids, ...(regenerate ? { regenerate } : {}) }),
+  preflightSample: (row_id: string) => rpcCall<PreflightDTO>('preflight_sample', { row_id }),
+  generateSample: (row_id: string) => rpcCall<{ queued: string[] }>('generate_sample', { row_id }),
   generateMissing: (row_ids?: string[]) => rpcCall<{ queued: string[] }>('generate_missing', { row_ids }),
   retryFailed: (row_ids?: string[]) => rpcCall<{ queued: string[] }>('retry_failed', { row_ids }),
   preflight: (row_ids?: string[]) => rpcCall<PreflightDTO>('preflight', { row_ids }),

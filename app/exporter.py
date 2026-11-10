@@ -144,8 +144,13 @@ class ImageExporter:
                     previews.append((stage / relative, f"{row.prompt_id or row_number} · {number}", image.metadata.get("full_prompt") or row.prompt))
                     # Include the actual frozen references used by this result, even
                     # when the row's current reference selection has since changed.
-                    for reference in image.metadata.get("reference_images", []):
-                        original = Path(reference.get("path", ""))
+                    references = image.metadata.get("reference_images")
+                    for reference in references if isinstance(references, list) else []:
+                        path = reference.get("path") if isinstance(reference, dict) else None
+                        if not isinstance(path, str) or not path:
+                            missing.append({"row_id": row.id, "kind": "generation_reference", "name": "Unknown reference"})
+                            continue
+                        original = Path(path)
                         if not original.is_file():
                             missing.append({"row_id": row.id, "kind": "generation_reference", "name": original.name})
                             continue

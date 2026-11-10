@@ -4,6 +4,7 @@ import { api, imageUrl } from '@/api/client';
 import { copyImage, copyText, desktopBridge } from '@/api/desktop';
 import { runAction } from '@/lib/feedback';
 import { Button } from '@/components/common/Button';
+import { ResultDetails } from './ResultDetails';
 import { X, ChevronLeft, ChevronRight, FolderOpen, Download, Copy } from 'lucide-react';
 
 interface ImageLightboxProps {
@@ -17,6 +18,7 @@ export function ImageLightbox({ images, initialIndex, defaultExportFolder, onClo
   const [index, setIndex] = useState(initialIndex);
   const current = images[index];
   const [feedback, setFeedback] = useState('');
+  const [showDetails, setShowDetails] = useState(false);
 
   useEffect(() => {
     if (index >= images.length) setIndex(0);
@@ -61,28 +63,35 @@ export function ImageLightbox({ images, initialIndex, defaultExportFolder, onClo
         <span className="text-sm font-mono text-text-muted">
             {index + 1} / {images.length} • {current.file_path.split(/[/\\]/).pop()}
         </span>
-        <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="secondary" aria-expanded={showDetails} onClick={() => setShowDetails(value => !value)}>Result Details</Button>
+          <button aria-label="Close image" onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors">
             <X size={24} />
-        </button>
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex items-center justify-center relative p-8">
-        <img 
-            src={imageUrl(current.file_path)} 
-            className="max-w-full max-h-full object-contain shadow-2xl rounded-sm"
-            alt="Full size"
-        />
+      <div className="flex-1 min-h-0 flex flex-col sm:flex-row">
+        <div className="flex-1 min-h-0 min-w-0 flex items-center justify-center relative p-8">
+          <img
+              src={imageUrl(current.file_path)}
+              className="max-w-full max-h-full object-contain shadow-2xl rounded-sm"
+              alt="Full size"
+          />
         
-        {images.length > 1 && (
-            <>
-                <button onClick={handlePrev} className="absolute left-4 p-3 rounded-full bg-black/50 hover:bg-white/20 transition-colors backdrop-blur-sm">
-                    <ChevronLeft size={32} />
-                </button>
-                <button onClick={handleNext} className="absolute right-4 p-3 rounded-full bg-black/50 hover:bg-white/20 transition-colors backdrop-blur-sm">
-                    <ChevronRight size={32} />
-                </button>
-            </>
-        )}
+          {images.length > 1 && (
+              <>
+                  <button onClick={handlePrev} className="absolute left-4 p-3 rounded-full bg-black/50 hover:bg-white/20 transition-colors backdrop-blur-sm">
+                      <ChevronLeft size={32} />
+                  </button>
+                  <button onClick={handleNext} className="absolute right-4 p-3 rounded-full bg-black/50 hover:bg-white/20 transition-colors backdrop-blur-sm">
+                      <ChevronRight size={32} />
+                  </button>
+              </>
+          )}
+        </div>
+
+        {showDetails && <ResultDetails image={current} />}
       </div>
 
       {feedback && <p role="status" className="text-center text-sm text-text-muted pb-2">{feedback}</p>}

@@ -2,7 +2,7 @@
 
 Contract review date: **2026-11-10**. This document describes the adapters implemented in this repository. Official documentation was checked for the API contracts; live OpenAI, Gemini, and Azure image generation was **not executed** during this refresh. Offline tests verify request construction, responses, and failure handling. Account access, deployed model versions, output quality, latency, and billing require a live check in the account that will run the batch.
 
-The initial application provider is **Mock**, which runs locally. Switching to a cloud provider is explicit. Saved unknown or retired model IDs fail validation rather than silently selecting another model. The Python provider catalog supplies capabilities to the clients. See [provider registry](../app/providers/registry.py), [shared validation](../app/providers/base.py), and [request-contract tests](../tests/test_provider_contracts.py).
+The initial application provider is **Mock**, which runs locally. Switching to a cloud provider is explicit. Saved unknown or retired model IDs fail validation rather than silently selecting another model. The Python provider catalog supplies capabilities to the desktop app. See [provider registry](../app/providers/registry.py), [shared validation](../app/providers/base.py), and [request-contract tests](../tests/test_provider_contracts.py).
 
 ## Implemented capabilities
 
@@ -90,7 +90,7 @@ Custom dimensions select an **aspect ratio and resolution tier**. They are not a
 
 Normal app sessions still enforce the shared 64–8192 custom-dimension range. Gemini controls the final dimensions and raster format. The app exposes only PNG as the format setting because it does not send a format selector; returned PNG, JPEG, or WebP bytes are detected, preserved, and saved with their correct extension. A request whose serialized JSON reaches 20,000,000 bytes is rejected before transmission, in addition to the 12 MiB reference-file bound.
 
-Legacy `thinking_budget` must be 0 or null. Flash accepts `thinking_level` of `minimal`, `high`, or an empty value that omits the field; the default is `high`. Pro does not receive a thinking-level override. The clients do not expose a general reasoning slider. Search grounding is excluded pending a complete attribution flow.
+Legacy `thinking_budget` must be 0 or null. Flash accepts `thinking_level` of `minimal`, `high`, or an empty value that omits the field; the default is `high`. Pro does not receive a thinking-level override. The desktop app does not expose a general reasoning slider. Search grounding is excluded pending a complete attribution flow.
 
 The old `gemini-3-pro-image-preview` and `gemini-2.5-flash-image` IDs are excluded. Google's [deprecation table](https://ai.google.dev/gemini-api/docs/deprecations?hl=en), reviewed 2026-11-10, lists 2026-06-25 for the Pro preview and 2026-10-02 as the earliest shutdown date for 2.5 Flash image. An earliest shutdown date is not evidence of a specific account's observed failure. This implementation does not silently map either old ID to a new model.
 

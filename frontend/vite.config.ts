@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => ({
   base: './',
   plugins: [
     react(),
-    ...(mode === 'web' ? [] : [electron([
+    ...(mode === 'renderer-test' ? [] : [electron([
       {
         // Entry point of the Electron App
         entry: 'electron/main.ts',
@@ -19,16 +19,6 @@ export default defineConfig(({ mode }) => ({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
-    },
-  },
-  server: {
-    // Proxy is still useful for web-only dev, but Electron handles this differently
-    proxy: {
-      '/rpc': {
-        target: 'http://127.0.0.1:8765',
-        changeOrigin: true,
-        secure: false,
-      },
     },
   },
 }));

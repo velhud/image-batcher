@@ -39,8 +39,16 @@ test('packaged desktop carries a real offline batch through its backend, gallery
     }, { exportFolder, saved });
     const page = await app.firstWindow();
     page.setDefaultTimeout(8000);
-    await page.getByRole('heading', { name: 'Studio', exact: true }).waitFor();
+    let startupLog = '';
+    app.process().stderr?.on('data', chunk => { startupLog = (startupLog + chunk).slice(-4000); });
+    await page.getByRole('heading', { name: 'Studio', exact: true }).waitFor({ timeout: 20000 }).catch(async error => {
+      const alert = (await page.getByRole('alert').allTextContents()).join(' ');
+      throw new Error(`Desktop startup did not reach the workspace. ${alert}\n${startupLog}`, { cause: error });
+    });
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
+    const backend = await page.evaluate(() => window.imageaiDesktop.backendOrigin());
+    assert.match(backend, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.notEqual(backend, 'http://127.0.0.1:8765');
 
     await page.getByRole('button', { name: 'Add rows', exact: true }).click();
     await page.getByLabel('Blank rows to add').fill('1');
@@ -64,6 +72,17 @@ test('packaged desktop carries a real offline batch through its backend, gallery
     const count = page.getByLabel('Images per prompt', { exact: true });
     await count.fill('2');
     await count.press('Tab');
+    await page.getByRole('button', { name: 'Preflight', exact: true }).click();
+    await page.getByText('Review checked requests', { exact: true }).click();
+    const result = page.getByRole('region', { name: 'Batch results' });
+    await result.getByText('brand / qa-01', { exact: true }).click();
+    await result.getByText(/Center the shape/).waitFor();
+    await page.getByRole('button', { name: 'Review Sample', exact: true }).click();
+    const sample = page.getByRole('dialog', { name: 'Review one-image sample' });
+    await sample.getByText(/mock-standard · 1 image/).waitFor();
+    await sample.getByRole('button', { name: 'Generate Sample', exact: true }).click();
+    await page.getByText('1 image', { exact: true }).waitFor();
+    assert.equal(await count.inputValue(), '2');
     await page.getByRole('button', { name: 'Generate Missing', exact: true }).click();
     await page.getByText('2 images', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Generate Missing', exact: true }).click();
@@ -93,6 +112,11 @@ test('packaged desktop carries a real offline batch through its backend, gallery
     const fullImage = page.getByAltText('Full size', { exact: true });
     await fullImage.waitFor();
     await page.waitForFunction(() => document.querySelector('img[alt="Full size"]')?.naturalWidth === 1024);
+    await page.getByRole('button', { name: 'Result Details', exact: true }).click();
+    const provenance = page.getByRole('complementary', { name: 'Result details' });
+    await provenance.getByText('A circle, blue White background. Center the shape.', { exact: true }).waitFor();
+    await provenance.getByText('1024×1024', { exact: true }).waitFor();
+    await provenance.getByText(/^[a-f0-9]{64}$/).waitFor();
     await page.getByRole('button', { name: 'Copy image', exact: true }).click();
     await page.getByText('Image copied.', { exact: true }).waitFor();
     assert.deepEqual(await app.evaluate(() => globalThis.testChoices.clipboard), { width: 1024, height: 1024 });

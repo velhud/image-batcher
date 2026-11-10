@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import mimetypes
 import os
@@ -9,7 +10,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Dict, Any, List
-from urllib.parse import parse_qs, urlparse, unquote
+from urllib.parse import parse_qs, urlparse
 
 from app.azure_logo_workflow import AZURE_LOGO_PROMPT_WRAPPER, apply_azure_logo_preset
 from app.batch_parser import parse_batch_input
@@ -286,6 +287,21 @@ class BackendState:
             return self.to_dict()
 
         # --- Generation ---
+        if action in {"preflight_sample", "generate_sample"}:
+            row = self._row_by_id(data["row_id"])
+            if row is None:
+                raise ValueError("The selected sample row is no longer in the session.")
+            if row.status in {RowStatus.QUEUED, RowStatus.GENERATING, RowStatus.INTERRUPTED}:
+                raise ValueError("Choose an idle row without an interrupted request for the sample.")
+            report = preflight([row], self.session.global_settings, self.registry, sample=True)
+            if action == "preflight_sample":
+                return report
+            if not report["valid"]:
+                raise ValueError("Sample validation failed: " + "; ".join(report["rows"][0]["errors"]))
+            queued = self.queue.enqueue(row, self.session.global_settings,
+                                        row_index=self.session.rows.index(row) + 1, sample=True)
+            return {"queued": [row.id] if queued else []}
+
         if action == "preflight":
             ids = set(data.get("row_ids") or [row.id for row in self.session.rows])
             return preflight([row for row in self.session.rows if row.id in ids], self.session.global_settings, self.registry)
@@ -420,9 +436,10 @@ def _json_response(handler: BaseHTTPRequestHandler, body: Dict, status: int = 20
 def _origin_allowed(origin: str | None) -> bool:
     if origin is None:
         return True
-    allowed = {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"}
-    allowed.update(item.strip() for item in os.environ.get("IMAGEAI_ALLOWED_ORIGINS", "").split(",") if item.strip())
-    return origin in allowed
+    configured = os.environ.get("IMAGEAI_ALLOWED_ORIGINS")
+    if configured is not None:
+        return origin in {item.strip() for item in configured.split(",") if item.strip()}
+    return origin in {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"}
 
 
 def _set_cors_headers(handler: BaseHTTPRequestHandler) -> None:
@@ -454,7 +471,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400, "missing path")
             return
 
-        file_path = Path(unquote(raw_path))
+        file_path = Path(raw_path)
         with STATE._lock:
             allowed = {Path(item.file_path).resolve() for row in STATE.session.rows for item in [*row.images, *row.attachments] if item.file_path}
         if file_path.resolve() not in allowed:
@@ -522,7 +539,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def run_server(port: int = 8765) -> None:
     server = HTTPServer(("127.0.0.1", port), Handler)
-    print(f"[backend_server] listening on http://127.0.0.1:{port}")
+    print(f"IMAGEAI_READY {server.server_address[1]}", flush=True)
     try:
         server.serve_forever()
     finally:
@@ -531,4 +548,6 @@ def run_server(port: int = 8765) -> None:
         server.server_close()
 
 if __name__ == "__main__":
-    run_server()
+    parser = argparse.ArgumentParser(description="Run the ImageAI local backend.")
+    parser.add_argument("--port", type=int, default=8765, help="Loopback port. Use 0 to select an available port.")
+    run_server(parser.parse_args().port)

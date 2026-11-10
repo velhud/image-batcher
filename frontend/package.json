@@ -6,12 +6,9 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
-    "dev:web": "vite --mode web",
     "typecheck": "tsc --noEmit && tsc --project tsconfig.node.json --noEmit",
-    "build:web": "npm run typecheck && vite build --mode web",
-    "test:ui": "npm run build:web && node --test tests/ui-smoke.cjs",
+    "test:ui": "npm run typecheck && vite build --mode renderer-test && node --test tests/ui-smoke.cjs",
     "build": "npm run typecheck && vite build && electron-builder",
-    "preview": "vite preview",
     "app": "npm run build && electron .",
     "test:desktop": "node --test tests/desktop-smoke.cjs"
   },

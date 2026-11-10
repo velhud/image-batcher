@@ -98,22 +98,20 @@ A second `--run` targeting the same populated output directory must return valid
 
 Other expected exit codes are `2` for malformed input or unsupported settings, and `1` for generation failure, cancellation or timeout. On an unresolved submitted request, inspect the saved interrupted state and receipts before deliberately requesting another generation.
 
-## 3. Build and test the React interface
+## 3. Test the desktop renderer
 
-Use Node.js 22.12 or newer within the Node 22 release line, matching the web CI job and the checked-in toolchain. From the repository root:
+Use Node.js 22.12 or newer within the Node 22 release line, matching the renderer CI job and the checked-in toolchain. From the repository root:
 
 ```bash
 cd frontend
 npm ci
-npm run typecheck
-npm run build:web
 npx playwright install chromium
-node --test tests/ui-smoke.cjs
+npm run test:ui
 ```
 
-`npm run test:ui` is the packaged equivalent of the web build followed by the smoke-test command. On Linux runners that need browser system libraries, the provided CI uses `npx playwright install --with-deps chromium`.
+`npm run test:ui` builds the desktop renderer and runs its smoke tests with a simulated desktop bridge. On Linux runners that need browser system libraries, the provided CI uses `npx playwright install --with-deps chromium`.
 
-For a web-only CI install, `npm ci --ignore-scripts` with `ELECTRON_SKIP_BINARY_DOWNLOAD=1` avoids downloading the Electron desktop binary. A later native Electron acceptance run needs a normal installation with its runtime available.
+For the renderer test CI install, `npm ci --ignore-scripts` with `ELECTRON_SKIP_BINARY_DOWNLOAD=1` avoids downloading the Electron desktop binary. A packaged Electron acceptance run needs a normal installation with its runtime available.
 
 The seven browser tests use Playwright Chromium and the Node test runner. They serve the actual compiled frontend but intercept RPC calls with fixtures; they do not start Python or contact an image provider.
 
@@ -146,18 +144,14 @@ On Windows, set `IMAGEAI_PYTHON` to the Python interpreter and `IMAGEAI_ELECTRON
 
 For interactive acceptance, launch the packaged executable with the same Python interpreter. In the desktop window:
 
-1. Import a structured CSV, preflight the batch, generate with Mock, and verify saved images and original identifiers.
+1. Import a structured CSV, review the resolved preflight requests, generate one Mock sample, then generate the missing images. Inspect saved prompts, image sizes and file hashes in Result Details.
 2. Change global settings and verify untouched rows inherit them. Use per-row settings to keep or replace images and to override the regeneration seed where supported.
 3. Stop a row or stop after current work. Check terminal statuses and use Generate Missing to resume eligible work. Decline an interrupted retry and confirm no new request starts.
 4. Use the native reference picker to attach multiple files on a compatible provider. Clear them before returning to Mock.
 5. Open a generated image in the gallery. Copy it, reveal it in the file manager, export just that image, then export the row.
-6. Save As, start a new session, export a portable batch, and open a relocated `session.json` through the native file picker. Verify the reopened images and manifest. Restart the app and verify session restoration.
+6. Save As, start a new session, export a portable batch, and open a relocated `session.json` through the native file picker. Verify the reopened images and manifest. Restart the app and verify session restoration. Stop the app-owned backend in an isolated test and use Reconnect to restore the workspace.
 
 The package includes the Python backend source. Install the Python runtime and project dependencies separately before testing an executable from another location.
-
-### Experimental SwiftUI
-
-Run `swift test --package-path macos-swiftui` and `swift build -c release --package-path macos-swiftui` on a Mac with the macOS SDK. Follow the separate [SwiftUI runbook](../macos-swiftui/README.md) for native interaction and backend reconnection.
 
 ## 5. Minimum real-provider acceptance
 

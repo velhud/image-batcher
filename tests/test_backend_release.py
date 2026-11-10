@@ -167,3 +167,34 @@ def test_legacy_session_loads_without_retaining_unused_appearance_settings(backe
     assert "theme" not in current["global_settings"]
     assert "prompt_highlighting" not in current["global_settings"]
     assert json.loads(path.read_text(encoding="utf-8")) == older
+
+
+
+def test_one_image_sample_counts_toward_target_without_replacing_existing_images(backend):
+    row_id = backend.dispatch("add_rows", {"prompts": ["A shape"]})["rows"][0]["id"]
+    backend.dispatch("global_settings", {"num_images": 3, "prompt_wrapper": "On white", "generate_behavior": "replace"})
+    report = backend.dispatch("preflight_sample", {"row_id": row_id})
+    assert report["valid"] and report["total_images"] == 1 and report["total_requests"] == 0
+    assert report["rows"][0]["request"]["prompt"] == "A shape\n\nOn white"
+    assert not backend.session.rows[0].images
+
+    sample_ids = []
+    for action, data, expected in (
+        ("generate_sample", {"row_id": row_id}, 1),
+        ("generate_sample", {"row_id": row_id}, 2),
+        ("generate_missing", {"row_ids": [row_id]}, 3),
+    ):
+        assert backend.dispatch(action, data)["queued"] == [row_id]
+        deadline = time.monotonic() + 4
+        while not backend.queue.is_idle() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        images = backend.session.rows[0].images
+        assert len(images) == expected
+        assert [image.id for image in images[:len(sample_ids)]] == sample_ids
+        sample_ids = [image.id for image in images]
+        assert images[-1].metadata["generation_settings"]["num_images"] == 1
+        assert backend.session.global_settings.num_images == 3
+
+    backend.session.rows[0].status = RowStatus.INTERRUPTED
+    with pytest.raises(ValueError, match="interrupted"):
+        backend.dispatch("generate_sample", {"row_id": row_id})

@@ -166,7 +166,7 @@ class GenerationQueue:
 
     def enqueue(
         self, row: RowData, global_settings: GlobalSettings, *,
-        row_index: int = 1, missing_only: bool = False, regenerate: bool = False,
+        row_index: int = 1, missing_only: bool = False, regenerate: bool = False, sample: bool = False,
     ) -> bool:
         """Admit a snapshot once; False means duplicate or skipped.
 
@@ -193,6 +193,9 @@ class GenerationQueue:
         if not isinstance(snapshot.prompt, str):
             raise ValueError("Prompt must be text.")
         settings = effective_settings(snapshot, global_settings)
+        if sample:
+            settings.num_images = 1
+            settings.generate_behavior = "keep"
         validate_settings(settings)
         provider = self.providers.get(settings.provider_id)
         model = provider.validate_settings(settings, snapshot.attachments)

@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 /** @type {import('../src/api/desktop').DesktopBridge} */
 const desktop = {
+  backendOrigin: () => ipcRenderer.invoke('desktop:backend-origin'),
+  reconnect: () => ipcRenderer.invoke('desktop:reconnect'),
   openSession: () => ipcRenderer.invoke('desktop:open-session'),
   saveSession: () => ipcRenderer.invoke('desktop:save-session'),
   selectFolder: defaultPath => ipcRenderer.invoke('desktop:select-folder', defaultPath),

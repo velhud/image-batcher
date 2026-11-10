@@ -26,6 +26,7 @@ function App() {
   const [tagFilter, setTagFilter] = useState("");
   const [isStatsOpen, setStatsOpen] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [reconnecting, setReconnecting] = useState(false);
   useEffect(() => {
     const listener = (event: Event) => setActionError((event as CustomEvent<string>).detail);
     window.addEventListener(API_ERROR_EVENT, listener);
@@ -35,16 +36,32 @@ function App() {
   const { data: state, isLoading, error } = useQuery({
     queryKey: ['state'],
     queryFn: api.fetchState,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     refetchInterval: (query) => {
-      if (!query.state.data) return 1000;
+      if (!query.state.data || query.state.error) return false;
       const isGenerating = query.state.data.session.rows.some(row => row.status === 'Queued' || row.status === 'Generating');
       return isGenerating ? 500 : 2000;
     }
   });
 
+  const reconnect = async () => {
+    setActionError('');
+    setReconnecting(true);
+    try {
+      await desktopBridge().reconnect();
+      await queryClient.fetchQuery({ queryKey: ['state'], queryFn: api.fetchState, staleTime: 0, retry: false });
+    } catch (failure) {
+      setActionError(errorMessage(failure));
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
   // HOTKEYS
   useHotkeys('cmd+enter', () => {
-    if (!state) return;
+    if (!state || error) return;
     const ids = state.session.rows.filter(r => r.selected).map(r => r.id);
     if (ids.length) runAction(async () => {
       const report = await api.preflight(ids);
@@ -56,11 +73,13 @@ function App() {
   });
   
   useHotkeys('cmd+n', () => runAction(async () => {
+     if (!state || error) return;
      await api.addRows([""]);
      await queryClient.invalidateQueries({ queryKey: ['state'] });
   }));
 
   useHotkeys('cmd+z', () => runAction(async () => {
+     if (!state || error) return;
      await api.undo();
      await queryClient.invalidateQueries({ queryKey: ['state'] });
   }));
@@ -73,10 +92,10 @@ function App() {
     );
   }
 
-  if (!state) return <div className="h-screen flex flex-col items-center justify-center bg-background text-text-main gap-4 px-8">
+  if (!state || error) return <div className="h-screen flex flex-col items-center justify-center bg-background text-text-main gap-4 px-8">
     <h1 className="text-xl font-semibold">ImageAI backend unavailable</h1>
-    <p role="alert" className="text-text-muted text-sm max-w-xl text-center">{errorMessage(error || 'Waiting for the local backend.')}</p>
-    <Button onClick={() => runAction(() => queryClient.invalidateQueries({ queryKey: ['state'] }))}>Reconnect</Button>
+    <p role="alert" className="text-text-muted text-sm max-w-xl text-center">{actionError || errorMessage(error || 'Waiting for the local backend.')}</p>
+    <Button disabled={reconnecting} onClick={reconnect}>{reconnecting ? 'Reconnecting…' : 'Reconnect'}</Button>
   </div>;
 
   const filteredRows = tagFilter.trim()
