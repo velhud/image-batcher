@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import time
 from http.server import HTTPServer
@@ -198,3 +199,14 @@ def test_one_image_sample_counts_toward_target_without_replacing_existing_images
     backend.session.rows[0].status = RowStatus.INTERRUPTED
     with pytest.raises(ValueError, match="interrupted"):
         backend.dispatch("generate_sample", {"row_id": row_id})
+
+
+
+def test_loopback_backend_binds_without_resolving_a_hostname(monkeypatch):
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("Loopback startup must not depend on reverse DNS")
+
+    monkeypatch.setattr(socket, "getfqdn", unexpected_lookup)
+    with backend_server.LoopbackHTTPServer(("127.0.0.1", 0), backend_server.Handler) as server:
+        assert server.server_name == "127.0.0.1"
+        assert server.server_port == server.socket.getsockname()[1] > 0

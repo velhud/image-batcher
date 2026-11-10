@@ -9,6 +9,7 @@ import uuid
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from typing import Dict, Any, List
 from urllib.parse import parse_qs, urlparse
 
@@ -537,8 +538,16 @@ class Handler(BaseHTTPRequestHandler):
             _json_response(self, {"ok": False, "error": str(exc)}, 500)
 
 
+class LoopbackHTTPServer(HTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer resolves a host name during bind. The desktop backend
+        # already uses a numeric loopback address and needs no DNS lookup.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def run_server(port: int = 8765) -> None:
-    server = HTTPServer(("127.0.0.1", port), Handler)
+    server = LoopbackHTTPServer(("127.0.0.1", port), Handler)
     print(f"IMAGEAI_READY {server.server_address[1]}", flush=True)
     try:
         server.serve_forever()
