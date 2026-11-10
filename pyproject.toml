@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imageai-batch-generator"
+version = "0.2.0"
+description = "A desktop and command-line workspace for accountable image batches"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+  "Pillow>=10.3,<14",
+  "requests>=2.32.3,<3",
+  "python-dotenv>=1.0.1,<2",
+]
+
+[project.optional-dependencies]
+desktop = ["PySide6>=6.7,<7"]
+test = ["pytest>=7.4,<10"]
+
+[project.scripts]
+imageai-batch = "app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

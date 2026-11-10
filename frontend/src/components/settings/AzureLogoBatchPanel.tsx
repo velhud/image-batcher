@@ -4,6 +4,8 @@ import { AlertTriangle, CheckCircle2, ClipboardCheck, FileDown, PauseCircle, Pla
 import { BackendState, BatchVerificationDTO } from '@/api/types';
 import { api } from '@/api/client';
 import { Button } from '@/components/common/Button';
+import { runAction } from '@/lib/feedback';
+import { NumberField, TextSetting } from './SettingFields';
 
 export function AzureLogoBatchPanel({ state }: { state: BackendState }) {
   const queryClient = useQueryClient();
@@ -14,9 +16,6 @@ export function AzureLogoBatchPanel({ state }: { state: BackendState }) {
   const filtered = rows.filter((r) => r.status === 'Filtered').length;
   const failed = rows.filter((r) => r.status === 'Error').length;
   const remaining = Math.max(0, rows.length - completed - filtered - failed);
-  const rpm = Math.max(1, gs.rate_limit_rpm || 4);
-  const etaMinutes = rows.length ? Math.ceil(remaining / rpm) : 0;
-  const estimatedCost = rows.length ? rows.length * 0.053 : 0;
 
   const { data: providerStatus } = useQuery({
     queryKey: ['provider-status'],
@@ -50,6 +49,11 @@ export function AzureLogoBatchPanel({ state }: { state: BackendState }) {
 
   const qualityValue = gs.quality <= 3 ? 'low' : gs.quality >= 8 ? 'high' : 'medium';
 
+  if (gs.provider_id !== 'azure-openai') return <div className="space-y-2 text-xs text-text-muted">
+    <Button size="sm" variant="secondary" className="w-full" onClick={() => runAction(applyPreset)}><ShieldCheck size={14} className="mr-2"/> Azure Logo Batch preset</Button>
+    <p>Switches to your Azure deployment with conservative batch settings.</p>
+  </div>;
+
   return (
     <div className="space-y-3 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.04] p-3 text-xs">
       <div className="flex items-center justify-between gap-2">
@@ -58,7 +62,7 @@ export function AzureLogoBatchPanel({ state }: { state: BackendState }) {
           Azure Logo Batch
         </div>
         {providerStatus?.azure_openai.configured ? (
-          <span className="inline-flex items-center gap-1 text-emerald-300"><CheckCircle2 size={12} /> Ready</span>
+          <span className="inline-flex items-center gap-1 text-emerald-300"><CheckCircle2 size={12} /> Configured</span>
         ) : (
           <span className="inline-flex items-center gap-1 text-amber-300"><AlertTriangle size={12} /> Missing config</span>
         )}
@@ -81,7 +85,7 @@ export function AzureLogoBatchPanel({ state }: { state: BackendState }) {
           <label className="mb-1 block text-text-muted">Quality</label>
           <select
             value={qualityValue}
-            onChange={(e) => update({ quality: e.target.value === 'low' ? 2 : e.target.value === 'high' ? 8 : 5 })}
+            onChange={(e) => runAction(() => update({ quality: e.target.value === 'low' ? 2 : e.target.value === 'high' ? 8 : 5 }))}
             className="w-full rounded border border-white/10 bg-black/20 p-2"
           >
             <option value="low">Low</option>
@@ -90,20 +94,13 @@ export function AzureLogoBatchPanel({ state }: { state: BackendState }) {
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-text-muted">Images/min</label>
-          <input
-            type="number"
-            min={1}
-            max={60}
-            value={gs.rate_limit_rpm}
-            onChange={(e) => update({ rate_limit_rpm: parseInt(e.target.value || '4', 10) })}
-            className="w-full rounded border border-white/10 bg-black/20 p-2"
-          />
+          <label className="mb-1 block text-text-muted">Local images/min</label>
+          <NumberField label="Azure image limit per minute" min={1} max={60} value={gs.rate_limit_rpm} onCommit={value => update({ rate_limit_rpm: value || 4 })} />
         </div>
       </div>
 
       <div className="rounded border border-white/10 bg-black/20 p-2 text-text-muted">
-        ETA: {etaMinutes ? `${etaMinutes} min` : 'ready'} · Estimate: ${estimatedCost.toFixed(2)} · n=1
+        {gs.num_images} images per row · Concurrency {gs.concurrency_limit}. Actual quota and pricing depend on your deployment.
       </div>
 
       <div>
@@ -111,38 +108,34 @@ export function AzureLogoBatchPanel({ state }: { state: BackendState }) {
           <label className="text-text-muted">Prompt Wrapper</label>
           <button
             className="inline-flex items-center gap-1 text-cyan-200 hover:text-white"
-            onClick={() => update({ prompt_wrapper: providerStatus?.azure_logo_wrapper || '' })}
+            onClick={() => runAction(() => update({ prompt_wrapper: providerStatus?.azure_logo_wrapper || '' }))}
           >
             <RotateCcw size={12} /> Reset
           </button>
         </div>
-        <textarea
-          value={gs.prompt_wrapper || ''}
-          onChange={(e) => update({ prompt_wrapper: e.target.value })}
-          className="h-24 w-full resize-none rounded border border-white/10 bg-black/20 p-2 text-[11px] leading-relaxed"
-        />
+        <TextSetting label="Prompt wrapper" rows={4} value={gs.prompt_wrapper || ''} onCommit={value => update({ prompt_wrapper: value })} />
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <Button size="sm" onClick={applyPreset}><ClipboardCheck size={14} className="mr-1" /> Preset</Button>
-        <Button size="sm" variant="secondary" onClick={() => api.generateMissing().then(() => queryClient.invalidateQueries({ queryKey: ['state'] }))}>
+        <Button size="sm" onClick={() => runAction(applyPreset)}><ClipboardCheck size={14} className="mr-1" /> Preset</Button>
+        <Button size="sm" variant="secondary" onClick={() => runAction(() => api.generateMissing().then(() => queryClient.invalidateQueries({ queryKey: ['state'] })))}>
           <Play size={14} className="mr-1" /> Generate Missing
         </Button>
-        <Button size="sm" variant="secondary" onClick={() => api.retryFailed().then(() => queryClient.invalidateQueries({ queryKey: ['state'] }))}>
+        <Button size="sm" variant="secondary" onClick={() => runAction(() => api.retryFailed().then(() => queryClient.invalidateQueries({ queryKey: ['state'] })))}>
           <RefreshCw size={14} className="mr-1" /> Retry Failed
         </Button>
-        <Button size="sm" variant="ghost" onClick={() => api.stopAfterCurrent()}>
+        <Button size="sm" variant="ghost" onClick={() => runAction(() => api.stopAfterCurrent())}>
           <PauseCircle size={14} className="mr-1" /> Stop After Current
         </Button>
-        <Button size="sm" variant="ghost" onClick={() => api.stopAll()}>
+        <Button size="sm" variant="ghost" onClick={() => runAction(() => api.stopAll())}>
           <Square size={14} className="mr-1" /> Stop All
         </Button>
-        <Button size="sm" variant="ghost" onClick={exportResults}>
+        <Button size="sm" variant="ghost" onClick={() => runAction(exportResults)}>
           <FileDown size={14} className="mr-1" /> Export
         </Button>
       </div>
 
-      <Button size="sm" variant="secondary" className="w-full" onClick={verify}>
+      <Button size="sm" variant="secondary" className="w-full" onClick={() => runAction(verify)}>
         Verify Batch
       </Button>
 

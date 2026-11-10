@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var appModel: AppViewModel
@@ -10,27 +11,28 @@ struct SettingsSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Stepper("Concurrency: \(concurrency)", value: $concurrency, in: 1...8)
+            Stepper("Concurrency: \(concurrency)", value: $concurrency, in: 1...16)
             TextField("Export folder", text: $exportFolder)
-            Stepper("Requests per minute: \(rpm)", value: $rpm, in: 1...500)
+            Stepper("Requests per minute: \(rpm)", value: $rpm, in: 1...6000)
             Stepper("Confirm threshold: \(threshold)", value: $threshold, in: 10...10000)
+            if let error = appModel.errorMessage { Text(error).font(.caption).foregroundColor(.red).textSelection(.enabled) }
             HStack {
                 Spacer()
                 Button("Save") {
                     Task {
                         if var gs = appModel.session?.global_settings {
                             gs.concurrency_limit = concurrency
-                            gs.export_folder = exportFolder
+                            gs.export_folder = exportFolder.isEmpty ? nil : exportFolder
                             gs.rate_limit_rpm = rpm
                             gs.confirm_generate_threshold = threshold
-                            await appModel.updateGlobal(settings: gs)
+                            if await appModel.updateGlobal(settings: gs) { dismiss() }
                         }
-                        dismiss()
                     }
                 }
                 Button("Cancel", role: .cancel) { dismiss() }
             }
         }
+        .disabled(appModel.isMutating)
         .padding()
         .onAppear {
             if let gs = appModel.session?.global_settings {

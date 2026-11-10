@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from app.models import RowData, RowStatus
+from app.models import GlobalSettings, RowData, RowStatus, effective_settings
 
 
 LOG_FILENAME = "generation_log.jsonl"
@@ -37,17 +37,23 @@ def read_generation_log(log_path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
-def verify_rows(rows: Iterable[RowData]) -> Dict[str, Any]:
+def verify_rows(rows: Iterable[RowData], settings: GlobalSettings | None = None) -> Dict[str, Any]:
     row_list = list(rows)
     successes: List[str] = []
     filtered: List[str] = []
     failed: List[str] = []
     missing: List[str] = []
     skipped: List[str] = []
+    actual_images = 0
+    requested_images = 0
 
     for idx, row in enumerate(row_list, start=1):
         prompt_id = row.prompt_id or f"prompt{idx:04d}"
-        has_existing_image = any(Path(img.file_path).exists() for img in row.images)
+        existing_count = len({str(Path(img.file_path).resolve()) for img in row.images if Path(img.file_path).is_file()})
+        desired_count = effective_settings(row, settings or GlobalSettings()).num_images
+        actual_images += existing_count
+        requested_images += desired_count
+        has_existing_image = existing_count >= desired_count
         if row.status == RowStatus.COMPLETED and has_existing_image:
             successes.append(prompt_id)
         elif row.status == RowStatus.FILTERED:
@@ -66,6 +72,9 @@ def verify_rows(rows: Iterable[RowData]) -> Dict[str, Any]:
     return {
         "total_prompts": total,
         "successful_images": success_count,
+        "successful_prompts": success_count,
+        "image_count": actual_images,
+        "requested_image_count": requested_images,
         "filtered_count": len(filtered),
         "failed_count": len(failed),
         "missing_count": len(missing),

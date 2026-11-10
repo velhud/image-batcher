@@ -10,7 +10,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from app.azure_logo_workflow import apply_azure_logo_preset
 from app.exporter import ImageExporter
 from app.generation_log import verify_rows
-from app.models import GlobalSettings, ImageResult, RowData, RowSettings, RowStatus, SessionData, PromptTemplate
+from app.models import GlobalSettings, RowData, RowSettings, RowStatus, SessionData, PromptTemplate, effective_settings, validate_settings
 from app.providers.registry import ProviderRegistry
 from app.queue_manager import GenerationQueue
 from app.session_manager import SessionManager
@@ -18,6 +18,8 @@ from app.undo_manager import UndoManager
 from app.stats import compute_stats
 from app.tagging import filter_rows
 from app.templates import expand_template, parse_variable_block
+from app.batch_service import preflight
+from app.generation_state import apply_generation_event
 from .batch_dialog import BatchInputDialog
 from .gallery import GalleryDialog
 from .row_widget import RowWidget
@@ -26,8 +28,13 @@ from .styles import BASE_STYLE
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    queue_event = QtCore.Signal(int, str, str, object)
+
     def __init__(self, registry: ProviderRegistry, session_manager: SessionManager) -> None:
         super().__init__()
+        self._loading_ui = True
+        self._queue_epoch = 0
+        self.queue_event.connect(self._receive_queue_event, QtCore.Qt.QueuedConnection)
         self.registry = registry
         self.session_manager = session_manager
         self.session: SessionData = session_manager.session
@@ -37,12 +44,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.queue = self._create_queue()
         self.row_widgets: Dict[str, RowWidget] = {}
         self.provider_models: Dict[str, List[str]] = self._build_provider_model_map()
-        self.setWindowTitle("Imagen Batch Generator")
+        self.setWindowTitle("ImageAI Batch Generator")
         self.setMinimumSize(1200, 800)
         self._build_ui()
         self._setup_shortcuts()
         self._start_autosave()
+        self._loading_ui = False
         self.apply_global_settings_to_ui()
+        if self.session_manager.restore_error:
+            self.banner.setText(self.session_manager.restore_error)
+            self.banner.setVisible(True)
         if not self.session.rows:
             self.add_row()
         else:
@@ -55,119 +66,144 @@ class MainWindow(QtWidgets.QMainWindow):
         return mapping
 
     def _create_queue(self) -> GenerationQueue:
+        self._queue_epoch += 1
+        epoch = self._queue_epoch
         queue = GenerationQueue(
             self.registry,
             output_root=self.session_manager.session_output_dir(),
             concurrency=self.session.global_settings.concurrency_limit,
             rpm=self.session.global_settings.rate_limit_rpm,
         )
-        queue.register_listener(self._handle_queue_event)
+        previous = getattr(self, "queue", None)
+        if previous is not None:
+            queue.rate_limiter = previous.rate_limiter
+            queue.rate_limiter.set_rpm(self.session.global_settings.rate_limit_rpm)
+        queue.register_listener(lambda event, row_id, payload: self.queue_event.emit(epoch, event, row_id, payload))
         return queue
 
+    def _idle_for_change(self) -> bool:
+        QtCore.QCoreApplication.sendPostedEvents(self, QtCore.QEvent.MetaCall)
+        if not self.queue.is_idle():
+            QtWidgets.QMessageBox.information(self, "Queue is active", "Wait for active work to finish, or stop the queue before changing sessions or concurrency.")
+            return False
+        return True
+
     def _reset_queue(self) -> None:
-        if self.queue:
-            self.queue.shutdown()
+        self.queue.shutdown()
         self.queue = self._create_queue()
+
+    @QtCore.Slot(int, str, str, object)
+    def _receive_queue_event(self, epoch: int, event: str, row_id: str, payload: dict) -> None:
+        if epoch == self._queue_epoch:
+            self._handle_queue_event(event, row_id, payload)
+
 
     def _build_ui(self) -> None:
         central = QtWidgets.QWidget()
         main_layout = QtWidgets.QVBoxLayout(central)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-
-        self.top_bar = self._build_top_bar()
-        main_layout.addLayout(self.top_bar)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
+        main_layout.addLayout(self._build_top_bar())
         self.banner = QtWidgets.QLabel("")
-        self.banner.setStyleSheet("background:#fff3cd;color:#8a6d3b;padding:6px;border:1px solid #f1e1a6;")
+        self.banner.setWordWrap(True)
+        self.banner.setStyleSheet("background:#fff3cd;color:#654d05;padding:8px;border-radius:4px;")
         self.banner.setVisible(False)
         main_layout.addWidget(self.banner)
+        body = QtWidgets.QHBoxLayout()
         self.global_panel = self._build_global_panel()
-        main_layout.addWidget(self.global_panel)
-
+        self.settings_scroll = QtWidgets.QScrollArea()
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setMinimumWidth(300)
+        self.settings_scroll.setMaximumWidth(350)
+        self.settings_scroll.setWidget(self.global_panel)
+        body.addWidget(self.settings_scroll)
         self.scroll_area = QtWidgets.QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.rows_container = QtWidgets.QWidget()
         self.rows_layout = QtWidgets.QVBoxLayout(self.rows_container)
         self.rows_layout.setAlignment(QtCore.Qt.AlignTop)
         self.scroll_area.setWidget(self.rows_container)
-        main_layout.addWidget(self.scroll_area, stretch=1)
-
-        self.bottom_bar = self._build_bottom_bar()
-        main_layout.addLayout(self.bottom_bar)
-
+        body.addWidget(self.scroll_area, stretch=1)
+        main_layout.addLayout(body, stretch=1)
+        main_layout.addLayout(self._build_bottom_bar())
+        self.status_bar_label = QtWidgets.QLabel()
+        main_layout.addWidget(self.status_bar_label)
         self.setCentralWidget(central)
         self.setStyleSheet(BASE_STYLE)
 
     def _build_top_bar(self) -> QtWidgets.QHBoxLayout:
         layout = QtWidgets.QHBoxLayout()
+        title = QtWidgets.QLabel("ImageAI")
+        title.setStyleSheet("font-weight:700;font-size:20px;")
+        layout.addWidget(title)
         self.provider_combo = QtWidgets.QComboBox()
+        self.provider_combo.setMinimumWidth(140)
         for info in self.registry.info_list():
             self.provider_combo.addItem(info.name, userData=info.id)
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        layout.addWidget(QtWidgets.QLabel("Provider"))
         layout.addWidget(self.provider_combo)
-
         self.model_combo = QtWidgets.QComboBox()
+        self.model_combo.setMinimumWidth(180)
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        layout.addWidget(QtWidgets.QLabel("Model"))
         layout.addWidget(self.model_combo)
-
-        self.rate_limit_note = QtWidgets.QLabel("Rate limit: see provider docs")
-        layout.addWidget(self.rate_limit_note)
-
-        self.global_toggle = QtWidgets.QPushButton("Global Settings")
+        self.rate_limit_note = QtWidgets.QLabel()
+        # Provider detail belongs in the settings pane, not the narrow toolbar.
+        self.rate_limit_note.setVisible(False)
+        self.global_toggle = QtWidgets.QPushButton("Settings")
         self.global_toggle.setCheckable(True)
         self.global_toggle.setChecked(True)
         self.global_toggle.clicked.connect(self._toggle_global_panel)
         layout.addWidget(self.global_toggle)
-
-        batch_btn = QtWidgets.QPushButton("Batch Input…")
-        batch_btn.clicked.connect(self._open_batch_dialog)
-        layout.addWidget(batch_btn)
-
-        azure_preset_btn = QtWidgets.QPushButton("Azure Logo Preset")
-        azure_preset_btn.clicked.connect(self._apply_azure_logo_preset)
-        layout.addWidget(azure_preset_btn)
-
-        tpl_btn = QtWidgets.QPushButton("Templates…")
-        tpl_btn.clicked.connect(self._open_templates_dialog)
-        layout.addWidget(tpl_btn)
-
-        new_btn = QtWidgets.QPushButton("New Session")
-        new_btn.clicked.connect(self._new_session)
-        layout.addWidget(new_btn)
-        open_btn = QtWidgets.QPushButton("Open…")
-        open_btn.clicked.connect(self._open_session)
-        layout.addWidget(open_btn)
-        save_btn = QtWidgets.QPushButton("Save…")
-        save_btn.clicked.connect(self._save_session)
-        layout.addWidget(save_btn)
-
-        app_settings_btn = QtWidgets.QPushButton("App Settings…")
-        app_settings_btn.clicked.connect(self._open_app_settings)
-        layout.addWidget(app_settings_btn)
-
-        stats_btn = QtWidgets.QPushButton("Statistics…")
-        stats_btn.clicked.connect(self._open_stats)
-        layout.addWidget(stats_btn)
-
+        for label, callback in (("Import batch…", self._open_batch_dialog), ("Templates…", self._open_templates_dialog)):
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(callback)
+            layout.addWidget(button)
+        session_button = QtWidgets.QPushButton("Session")
+        session_menu = QtWidgets.QMenu(session_button)
+        for label, callback in (("New session", self._new_session), ("Open…", self._open_session), ("Save…", self._save_session),
+                                ("App settings…", self._open_app_settings), ("Azure logo preset", self._apply_azure_logo_preset),
+                                ("Statistics…", self._open_stats), ("Undo", self._undo), ("Redo", self._redo)):
+            session_menu.addAction(label, callback)
+        session_button.setMenu(session_menu)
+        layout.addWidget(session_button)
         self.tag_filter_edit = QtWidgets.QLineEdit()
         self.tag_filter_edit.setPlaceholderText("Filter by tag…")
         self.tag_filter_edit.textChanged.connect(self._apply_tag_filter)
-        layout.addWidget(self.tag_filter_edit)
-
-        layout.addStretch()
+        layout.addWidget(self.tag_filter_edit, stretch=1)
         return layout
 
     def _build_global_panel(self) -> QtWidgets.QGroupBox:
-        panel = QtWidgets.QGroupBox("Global Settings (defaults for new rows)")
+        panel = QtWidgets.QGroupBox("Batch defaults")
         form = QtWidgets.QFormLayout(panel)
+        form.setRowWrapPolicy(QtWidgets.QFormLayout.WrapAllRows)
         self.size_combo = QtWidgets.QComboBox()
         self.size_combo.addItems(["Square 1024", "Portrait", "Landscape", "Custom"])
         self.size_combo.currentTextChanged.connect(self._global_changed)
         form.addRow("Image size", self.size_combo)
+        custom_layout = QtWidgets.QHBoxLayout()
+        self.width_spin, self.height_spin = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
+        for spin in (self.width_spin, self.height_spin):
+            spin.setRange(64, 8192)
+            spin.setSingleStep(16)
+            spin.setValue(1024)
+            spin.valueChanged.connect(self._global_changed)
+            custom_layout.addWidget(spin)
+        form.addRow("Custom width × height", custom_layout)
+        self.format_combo = QtWidgets.QComboBox()
+        self.format_combo.addItems(["png", "jpeg", "webp"])
+        self.format_combo.currentTextChanged.connect(self._global_changed)
+        form.addRow("Output format", self.format_combo)
+        self.background_combo = QtWidgets.QComboBox()
+        self.background_combo.addItems(["auto", "opaque", "transparent"])
+        self.background_combo.currentTextChanged.connect(self._global_changed)
+        form.addRow("Background", self.background_combo)
+        self.capability_note = QtWidgets.QLabel()
+        self.capability_note.setWordWrap(True)
+        form.addRow(self.capability_note)
+
 
         self.num_spin = QtWidgets.QSpinBox()
-        self.num_spin.setRange(1, 8)
+        self.num_spin.setRange(1, 10)
         self.num_spin.valueChanged.connect(self._global_changed)
         form.addRow("Images per prompt", self.num_spin)
 
@@ -228,7 +264,7 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow(apply_btn)
 
         note = QtWidgets.QLabel(
-            "These settings are defaults for new rows. Existing rows keep their own settings unless you apply changes to them explicitly."
+            "Rows inherit these defaults unless a setting is overridden. Queued runs retain the settings captured when submitted."
         )
         note.setWordWrap(True)
         form.addRow(note)
@@ -236,90 +272,91 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_bottom_bar(self) -> QtWidgets.QHBoxLayout:
         layout = QtWidgets.QHBoxLayout()
-        add_btn = QtWidgets.QPushButton("Add Row")
-        add_btn.clicked.connect(self.add_row)
-        layout.addWidget(add_btn)
-        add_many_btn = QtWidgets.QPushButton("Add N Rows…")
-        add_many_btn.clicked.connect(self._add_many_rows)
-        layout.addWidget(add_many_btn)
-
-        sel_all_btn = QtWidgets.QPushButton("Select All")
-        sel_all_btn.clicked.connect(self._select_all)
-        layout.addWidget(sel_all_btn)
-        clear_sel_btn = QtWidgets.QPushButton("Clear Selection")
-        clear_sel_btn.clicked.connect(self._clear_selection)
-        layout.addWidget(clear_sel_btn)
-        select_no_image_btn = QtWidgets.QPushButton("Select rows with no image")
-        select_no_image_btn.clicked.connect(self._select_no_image)
-        layout.addWidget(select_no_image_btn)
-        select_pending_btn = QtWidgets.QPushButton("Select pending")
-        select_pending_btn.clicked.connect(self._select_pending)
-        layout.addWidget(select_pending_btn)
-
-        gen_sel_btn = QtWidgets.QPushButton("Generate Selected")
-        gen_sel_btn.clicked.connect(self._generate_selected)
-        layout.addWidget(gen_sel_btn)
-        gen_missing_btn = QtWidgets.QPushButton("Generate Missing")
-        gen_missing_btn.clicked.connect(self._generate_missing)
-        layout.addWidget(gen_missing_btn)
-        gen_all_btn = QtWidgets.QPushButton("Generate All")
-        gen_all_btn.clicked.connect(self._generate_all)
-        layout.addWidget(gen_all_btn)
-        stop_after_current = QtWidgets.QPushButton("Stop After Current")
-        stop_after_current.clicked.connect(self.queue.stop_after_current)
-        layout.addWidget(stop_after_current)
-        stop_all = QtWidgets.QPushButton("Stop All")
-        stop_all.clicked.connect(self.queue.cancel_all)
-        layout.addWidget(stop_all)
-
-        del_sel_btn = QtWidgets.QPushButton("Delete Selected")
-        del_sel_btn.clicked.connect(self._delete_selected)
-        layout.addWidget(del_sel_btn)
-        del_all_btn = QtWidgets.QPushButton("Delete All")
-        del_all_btn.clicked.connect(self._delete_all)
-        layout.addWidget(del_all_btn)
-
-        export_sel = QtWidgets.QPushButton("Export Selected")
-        export_sel.clicked.connect(self._export_selected)
-        layout.addWidget(export_sel)
-        export_all = QtWidgets.QPushButton("Export All")
-        export_all.clicked.connect(self._export_all)
-        layout.addWidget(export_all)
-        verify_btn = QtWidgets.QPushButton("Verify Batch")
-        verify_btn.clicked.connect(self._verify_batch)
-        layout.addWidget(verify_btn)
-
-        self.status_bar_label = QtWidgets.QLabel("")
-        layout.addWidget(self.status_bar_label)
-        layout.addStretch()
+        for label, callback in (("Add row", self.add_row), ("Preflight", self._preflight_batch),
+                                ("Generate selected", self._generate_selected), ("Generate missing", self._generate_missing),
+                                ("Generate all", self._generate_all), ("Stop all", lambda: self.queue.cancel_all())):
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(callback)
+            layout.addWidget(button)
+        actions = QtWidgets.QPushButton("More actions")
+        menu = QtWidgets.QMenu(actions)
+        for label, callback in (("Stop after current", lambda: self.queue.stop_after_current()),
+                                ("Add multiple rows…", self._add_many_rows), ("Select all", self._select_all),
+                                ("Clear selection", self._clear_selection), ("Select rows without images", self._select_no_image),
+                                ("Select pending", self._select_pending), ("Delete selected", self._delete_selected),
+                                ("Delete all", self._delete_all), ("Verify batch", self._verify_batch),
+                                ("Export selected images…", self._export_selected), ("Export all images…", self._export_all)):
+            menu.addAction(label, callback)
+        actions.setMenu(menu)
+        layout.addWidget(actions)
+        portable = QtWidgets.QPushButton("Export portable batch…")
+        portable.clicked.connect(self._export_bundle)
+        layout.addWidget(portable)
         return layout
 
     def _toggle_global_panel(self) -> None:
-        self.global_panel.setVisible(self.global_toggle.isChecked())
+        self.settings_scroll.setVisible(self.global_toggle.isChecked())
 
     def apply_global_settings_to_ui(self) -> None:
+        self._loading_ui = True
         gs = self.session.global_settings
-        self.size_combo.setCurrentText(gs.size_preset)
-        self.num_spin.setValue(gs.num_images)
-        self.style_combo.setCurrentText(gs.style_preset)
-        self.negative_edit.setPlainText(gs.negative_prompt)
-        self.prompt_wrapper_edit.setPlainText(gs.prompt_wrapper)
-        self.random_seed_box.setChecked(gs.random_seed)
-        self.seed_spin.setValue(gs.seed or 0)
-        self.quality_slider.setValue(gs.quality)
-        self.safety_slider.setValue(gs.safety)
-        self.prompt_highlight_box.setChecked(gs.prompt_highlighting)
-        self.generate_behavior_combo.setCurrentText(gs.generate_behavior)
-        self.regen_same_seed_box.setChecked(gs.regen_use_same_seed)
+        try:
+            self.size_combo.setCurrentText(gs.size_preset)
+            custom = gs.custom_size or {"width": 1024, "height": 1024}
+            self.width_spin.setValue(custom["width"])
+            self.height_spin.setValue(custom["height"])
+            self.num_spin.setValue(gs.num_images)
+            self.style_combo.setCurrentText(gs.style_preset)
+            self.negative_edit.setPlainText(gs.negative_prompt)
+            self.prompt_wrapper_edit.setPlainText(gs.prompt_wrapper)
+            self.random_seed_box.setChecked(gs.random_seed)
+            self.seed_spin.setValue(gs.seed or 0)
+            self.quality_slider.setValue(gs.quality)
+            self.safety_slider.setValue(gs.safety)
+            self.prompt_highlight_box.setChecked(gs.prompt_highlighting)
+            self.generate_behavior_combo.setCurrentText(gs.generate_behavior)
+            self.regen_same_seed_box.setChecked(gs.regen_use_same_seed)
+            self.provider_combo.setCurrentIndex(self.provider_combo.findData(gs.provider_id))
+            self._populate_models(gs.provider_id)
+            index = self.model_combo.findData(gs.model_id)
+            if index < 0:
+                self.model_combo.addItem(f"{gs.model_id} (select a supported model)", gs.model_id)
+                index = self.model_combo.count() - 1
+            self.model_combo.setCurrentIndex(index)
+            self._apply_capabilities()
+            self.format_combo.setCurrentText(gs.output_format)
+            self.background_combo.setCurrentText(gs.background)
+        finally:
+            self._loading_ui = False
 
-        # top combos
-        idx = self.provider_combo.findData(gs.provider_id)
-        if idx >= 0:
-            self.provider_combo.setCurrentIndex(idx)
-        self._populate_models(gs.provider_id)
-        midx = self.model_combo.findData(gs.model_id)
-        if midx >= 0:
-            self.model_combo.setCurrentIndex(midx)
+    def _apply_capabilities(self) -> None:
+        gs = self.session.global_settings
+        model = next((m for info in self.registry.info_list() for m in info.models if info.id == gs.provider_id and m.id == gs.model_id), None)
+        if model is None:
+            self.capability_note.setText("Select a currently supported model. Saved model choices are never silently replaced.")
+            return
+        caps = model.capabilities
+        self.num_spin.setMaximum(caps.max_images)
+        self.style_combo.setEnabled(caps.supports_style)
+        self.negative_edit.setEnabled(caps.supports_negative_prompt)
+        self.seed_spin.setEnabled(caps.supports_seed)
+        self.random_seed_box.setEnabled(caps.supports_seed)
+        self.quality_slider.setEnabled(caps.supports_quality)
+        self.safety_slider.setEnabled(caps.supports_safety)
+        self.width_spin.setEnabled(caps.supports_custom_size and gs.size_preset == "Custom")
+        self.height_spin.setEnabled(caps.supports_custom_size and gs.size_preset == "Custom")
+        self.format_combo.blockSignals(True)
+        self.format_combo.clear()
+        self.format_combo.addItems(caps.output_formats)
+        self.format_combo.setCurrentText(gs.output_format)
+        self.format_combo.blockSignals(False)
+        self.background_combo.setEnabled(caps.supports_background)
+        note = f"Reference images: up to {caps.max_attachments}. " if caps.supports_attachments else "Reference images are unavailable for this model. "
+        if caps.quality_options:
+            note += "Quality 1–3 = low, 4–7 = medium, 8–10 = high. "
+        if gs.provider_id == "google":
+            note += "Custom dimensions select aspect ratio and resolution tier; output pixels are provider controlled."
+        self.capability_note.setText(note)
 
     def _populate_models(self, provider_id: str) -> None:
         self.model_combo.blockSignals(True)
@@ -333,9 +370,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_combo.blockSignals(False)
 
     def _global_changed(self) -> None:
+        if self._loading_ui:
+            return
         self._push_undo()
         gs = self.session.global_settings
         gs.size_preset = self.size_combo.currentText()
+        gs.custom_size = {"width": self.width_spin.value(), "height": self.height_spin.value()} if gs.size_preset == "Custom" else None
+        gs.output_format = self.format_combo.currentText() or "png"
+        gs.background = self.background_combo.currentText() or "auto"
         gs.num_images = self.num_spin.value()
         gs.style_preset = self.style_combo.currentText()
         gs.negative_prompt = self.negative_edit.toPlainText()
@@ -347,24 +389,48 @@ class MainWindow(QtWidgets.QMainWindow):
         gs.prompt_highlighting = self.prompt_highlight_box.isChecked()
         gs.generate_behavior = self.generate_behavior_combo.currentText()
         gs.regen_use_same_seed = self.regen_same_seed_box.isChecked()
+        self._apply_capabilities()
+        self._refresh_all_rows()
         self.session_manager.autosave()
 
     def _on_provider_changed(self) -> None:
-        pid = self.provider_combo.currentData()
-        self.session.global_settings.provider_id = pid
-        self._populate_models(pid)
-        # update global model id to first
-        if self.model_combo.count() > 0:
-            self.model_combo.setCurrentIndex(0)
-        self._refresh_all_rows()
+        if self._loading_ui:
+            return
+        gs = self.session.global_settings
+        gs.provider_id = self.provider_combo.currentData()
+        self._populate_models(gs.provider_id)
+        gs.model_id = self.model_combo.currentData()
+        self._on_model_changed()
 
     def _on_model_changed(self) -> None:
-        mid = self.model_combo.currentData()
-        self.session.global_settings.model_id = mid
+        if self._loading_ui:
+            return
+        gs = self.session.global_settings
+        gs.model_id = self.model_combo.currentData()
+        model = next((m for info in self.registry.info_list() for m in info.models
+                      if info.id == gs.provider_id and m.id == gs.model_id), None)
+        if model:
+            caps = model.capabilities
+            gs.num_images = min(gs.num_images, caps.max_images)
+            if not caps.supports_style:
+                gs.style_preset = "None"
+            if not caps.supports_negative_prompt:
+                gs.negative_prompt = ""
+            if not caps.supports_seed:
+                gs.seed, gs.random_seed = None, True
+            if not caps.supports_safety:
+                gs.safety = 2
+            if gs.output_format not in caps.output_formats:
+                gs.output_format = caps.output_formats[0]
+            if not caps.supports_background:
+                gs.background = "auto"
+            gs.thinking_budget, gs.thinking_level = 0, "high"
+        self.apply_global_settings_to_ui()
         self._refresh_all_rows()
+        self.session_manager.autosave()
 
     def _add_row_widget(self, row: RowData, index: int) -> None:
-        widget = RowWidget(row, index, self.provider_models, self.session.global_settings)
+        widget = RowWidget(row, index, self.provider_models, self.session.global_settings, registry=self.registry)
         widget.generate_requested.connect(self._generate_row)
         widget.regenerate_requested.connect(self._regenerate_row)
         widget.cancel_requested.connect(lambda rid=row.id: self.queue.cancel(rid))
@@ -430,13 +496,32 @@ class MainWindow(QtWidgets.QMainWindow):
             self.row_widgets[row.id].select_box.setChecked(row.selected)
         self._update_status_summary()
 
-    def _generate_row(self, row_id: str) -> None:
+    def _confirm_interrupted(self, rows: List[RowData]) -> bool:
+        count = sum(row.status == RowStatus.INTERRUPTED for row in rows)
+        if not count:
+            return True
+        answer = QtWidgets.QMessageBox.question(
+            self, "Review interrupted work",
+            f"{count} interrupted row(s) have an uncertain provider outcome. "
+            "Review saved outputs and provider history first. A new request may be billed again. "
+            "Start a new request for these rows?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return answer == QtWidgets.QMessageBox.Yes
+
+    def _generate_row(self, row_id: str, reviewed_interrupted: bool = False) -> None:
         row = self._row_by_id(row_id)
         if not row:
             return
-        row.status = RowStatus.QUEUED
-        widget = self.row_widgets[row.id]
-        widget.update_status(RowStatus.QUEUED)
+        if not reviewed_interrupted and not self._confirm_interrupted([row]):
+            return
+        report = preflight([row], self.session.global_settings, self.registry)
+        if not report["valid"]:
+            row.status = RowStatus.ERROR
+            row.error_message = "; ".join(report["rows"][0]["errors"])
+            self._refresh_all_rows()
+            return
         self.queue.enqueue(row, self.session.global_settings, row_index=self.session.rows.index(row) + 1)
         self._update_status_summary()
 
@@ -455,21 +540,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self._generate_row(row_id)
 
     def _generate_selected(self) -> None:
-        for row in self.session.rows:
-            if row.selected and row.status in {RowStatus.IDLE, RowStatus.ERROR, RowStatus.FILTERED, RowStatus.CANCELLED, RowStatus.COMPLETED}:
-                self._generate_row(row.id)
+        rows = [row for row in self.session.rows if row.selected]
+        if not self._validate_batch(rows) or not self._confirm_interrupted(rows):
+            return
+        for row in rows:
+            if row.status in {RowStatus.IDLE, RowStatus.ERROR, RowStatus.FILTERED, RowStatus.CANCELLED, RowStatus.COMPLETED, RowStatus.INTERRUPTED}:
+                self._generate_row(row.id, reviewed_interrupted=True)
 
     def _generate_missing(self) -> None:
-        for row in self.session.rows:
-            if not row.images and row.status not in {RowStatus.QUEUED, RowStatus.GENERATING}:
-                row.status = RowStatus.QUEUED
-                widget = self.row_widgets.get(row.id)
-                if widget:
-                    widget.update_status(RowStatus.QUEUED)
-                self.queue.enqueue(row, self.session.global_settings, row_index=self.session.rows.index(row) + 1, missing_only=True)
+        rows = [row for row in self.session.rows if row.status not in {RowStatus.QUEUED, RowStatus.GENERATING}]
+        if not self._validate_batch(rows):
+            return
+        for row in rows:
+            self.queue.enqueue(row, self.session.global_settings, row_index=self.session.rows.index(row) + 1, missing_only=True)
         self._update_status_summary()
 
     def _generate_all(self) -> None:
+        if not self._validate_batch(self.session.rows):
+            return
+        if not self._confirm_interrupted(self.session.rows):
+            return
         threshold = self.session.global_settings.confirm_generate_threshold or 300
         if len(self.session.rows) >= threshold:
             confirm = QtWidgets.QMessageBox.question(
@@ -478,10 +568,12 @@ class MainWindow(QtWidgets.QMainWindow):
             if confirm != QtWidgets.QMessageBox.Yes:
                 return
         for row in self.session.rows:
-            if row.status in {RowStatus.IDLE, RowStatus.ERROR, RowStatus.FILTERED, RowStatus.CANCELLED, RowStatus.COMPLETED}:
-                self._generate_row(row.id)
+            if row.status in {RowStatus.IDLE, RowStatus.ERROR, RowStatus.FILTERED, RowStatus.CANCELLED, RowStatus.COMPLETED, RowStatus.INTERRUPTED}:
+                self._generate_row(row.id, reviewed_interrupted=True)
 
     def _delete_row(self, row_id: str) -> None:
+        if not self._idle_for_change():
+            return
         row = self._row_by_id(row_id)
         if not row:
             return
@@ -530,6 +622,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_status_summary()
 
     def _delete_all(self) -> None:
+        if not self._idle_for_change():
+            return
         confirm = QtWidgets.QMessageBox.question(
             self,
             "Confirm delete",
@@ -557,74 +651,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_tag_filter()
 
     def _handle_queue_event(self, event: str, row_id: str, payload: Dict) -> None:
+        if event == "queue_position":
+            return
         row = self._row_by_id(row_id)
         if not row:
             return
+        apply_generation_event(row, event, payload)
         widget = self.row_widgets.get(row_id)
-        if event == "queued":
-            row.status = RowStatus.QUEUED
-            if widget:
-                widget.update_status(RowStatus.QUEUED, f"Queued (#{payload.get('position','')})")
-        elif event == "queue_position":
-            if widget:
-                widget.update_status(RowStatus.QUEUED, f"Queued (#{payload.get('position','')})")
-        elif event == "started":
-            row.status = RowStatus.GENERATING
-            if widget:
-                widget.update_status(RowStatus.GENERATING, "Generating…")
-        elif event == "completed":
-            row.status = RowStatus.COMPLETED
-            row.error_message = ""
-            paths = payload.get("paths", [])
-            images = payload.get("images", [])
-            duration = payload.get("duration")
-            keep_existing = payload.get("keep_existing", True)
-            if not keep_existing:
-                row.images = []
-            row.last_duration = duration
-            if images:
-                for img in images:
-                    row.images.append(
-                        ImageResult(
-                            id=str(uuid.uuid4()),
-                            row_id=row.id,
-                            file_path=img.get("path", ""),
-                            metadata=img.get("metadata", {}),
-                        )
-                    )
-            else:
-                for p in paths:
-                    row.images.append(ImageResult(id=str(uuid.uuid4()), row_id=row.id, file_path=p))
-            if widget:
-                widget.update_status(RowStatus.COMPLETED, f"Completed: {len(row.images)} images")
-                widget.refresh(self.session.global_settings, int(widget.index_label.text()))
-        elif event == "error":
-            row.status = RowStatus.ERROR
-            row.error_message = payload.get("message", "")
-            if widget:
-                widget.update_status(RowStatus.ERROR, row.error_message)
-            if "rate" in row.error_message.lower():
-                self.rate_limit_hits += 1
-                if self.rate_limit_hits >= 3:
-                    self.banner.setText("Multiple rate limit errors detected. Try lowering concurrency or RPM in settings.")
-                    self.banner.setVisible(True)
-        elif event == "filtered":
-            row.status = RowStatus.FILTERED
-            row.error_message = payload.get("message", "")
-            if widget:
-                widget.update_status(RowStatus.FILTERED, row.error_message)
-        elif event == "cancelled":
-            row.status = RowStatus.CANCELLED
-            if widget:
-                widget.update_status(RowStatus.CANCELLED, "Cancelled")
-        elif event == "skipped":
-            row.error_message = payload.get("message", "")
-            if any(Path(img.file_path).exists() for img in row.images):
-                row.status = RowStatus.COMPLETED
-            if widget:
-                widget.update_status(row.status, row.error_message)
+        if widget:
+            widget.refresh(self.session.global_settings, self.session.rows.index(row) + 1)
         self.session_manager.autosave()
         self._update_status_summary()
+
+    def _validate_batch(self, rows: List[RowData]) -> bool:
+        report = preflight(rows, self.session.global_settings, self.registry)
+        if not report["valid"]:
+            errors = [f"{r['prompt_id'] or r['row_id']}: {', '.join(r['errors'])}" for r in report["rows"] if r["errors"]]
+            QtWidgets.QMessageBox.warning(self, "Batch validation", "\n".join(errors[:20]))
+            return False
+        return True
+
+    def _preflight_batch(self) -> None:
+        if self._validate_batch(self.session.rows):
+            report = preflight(self.session.rows, self.session.global_settings, self.registry)
+            QtWidgets.QMessageBox.information(self, "Batch preflight", f"{len(report['rows'])} rows ready.\n{report['total_images']} requested images in {report['total_requests']} initial API requests.\nNo provider request was sent.")
+
+    def _export_bundle(self) -> None:
+        folder = self._ask_export_folder()
+        if folder:
+            try:
+                result = ImageExporter(self.session.global_settings.naming_pattern).export_bundle(self.session, folder)
+                QtWidgets.QMessageBox.information(self, "Portable batch", f"Exported {result['exported']} images.\nMissing files: {len(result['missing'])}\n{result['path']}")
+            except (OSError, ValueError) as exc:
+                QtWidgets.QMessageBox.warning(self, "Export failed", str(exc))
 
     def _refresh_all_rows(self) -> None:
         for idx, row in enumerate(self.session.rows, start=1):
@@ -663,14 +722,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             self._push_undo()
             if mode.startswith("Replace"):
+                if not self._idle_for_change():
+                    return
                 self.session.rows.clear()
+            parsed_rows = list(dlg.rows)
             if mode.startswith("Fill"):
-                empty_rows = [r for r in self.session.rows if not r.prompt]
-                for row, prompt in zip(empty_rows, prompts):
-                    row.prompt = prompt
-                prompts = prompts[len(empty_rows) :]
-            for prompt in prompts:
-                row = RowData(id=str(uuid.uuid4()), prompt=prompt)
+                empty_rows = [r for r in self.session.rows if not r.prompt and r.status not in {RowStatus.QUEUED, RowStatus.GENERATING}]
+                for row, parsed in zip(empty_rows, parsed_rows):
+                    row.prompt, row.prompt_id, row.category_id = parsed.prompt, parsed.prompt_id, parsed.category_id
+                    row.source_metadata = parsed.source_metadata
+                parsed_rows = parsed_rows[len(empty_rows):]
+            for parsed in parsed_rows:
+                row = RowData(id=str(uuid.uuid4()), prompt=parsed.prompt, prompt_id=parsed.prompt_id,
+                              category_id=parsed.category_id, source_metadata=parsed.source_metadata)
                 self.session.rows.append(row)
             self._reload_rows()
             self.session_manager.autosave()
@@ -766,7 +830,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.information(self, "Export", f"Exported {count} image(s) to {folder}")
 
     def _verify_batch(self) -> None:
-        result = verify_rows(self.session.rows)
+        result = verify_rows(self.session.rows, self.session.global_settings)
         message = (
             f"Prompts: {result['total_prompts']}\n"
             f"Successful images: {result['successful_images']}\n"
@@ -778,6 +842,8 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.information(self, "Batch verification", message)
 
     def _apply_azure_logo_preset(self) -> None:
+        if not self._idle_for_change():
+            return
         self._push_undo()
         apply_azure_logo_preset(self.session.global_settings)
         self._reset_queue()
@@ -795,6 +861,8 @@ class MainWindow(QtWidgets.QMainWindow):
         return None
 
     def _open_app_settings(self) -> None:
+        if not self._idle_for_change():
+            return
         dlg = AppSettingsDialog(
             self.session.global_settings.concurrency_limit,
             self.session.global_settings.export_folder,
@@ -818,7 +886,6 @@ class MainWindow(QtWidgets.QMainWindow):
             ) = dlg.get_values()
             self.session.global_settings.concurrency_limit = concurrency
             if concurrency != self.queue.concurrency:
-                self.queue.concurrency = concurrency
                 self._reset_queue()
             if export_folder:
                 self.session.global_settings.export_folder = export_folder
@@ -881,6 +948,12 @@ class MainWindow(QtWidgets.QMainWindow):
         return isinstance(widget, (QtWidgets.QLineEdit, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit))
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
+        self.queue.cancel_all()
+        QtCore.QCoreApplication.sendPostedEvents(self, QtCore.QEvent.MetaCall)
+        for row in self.session.rows:
+            if row.status in {RowStatus.GENERATING, RowStatus.QUEUED}:
+                row.status = RowStatus.INTERRUPTED
+                row.error_message = "Closed during generation; review outputs before retrying."
         self.queue.shutdown()
         self.session_manager.autosave()
         return super().closeEvent(event)
@@ -889,9 +962,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.undo_manager.push(self.session)
 
     def _open_session(self) -> None:
+        if not self._idle_for_change():
+            return
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open session", str(Path.home()), "JSON files (*.json)")
         if path:
-            self.session = self.session_manager.load(Path(path))
+            try:
+                candidate = self.session_manager.load(Path(path))
+            except (OSError, ValueError, TypeError) as exc:
+                QtWidgets.QMessageBox.warning(self, "Could not open session", str(exc))
+                return
+            self.session = candidate
             self._reset_queue()
             self._reload_rows()
             self.apply_global_settings_to_ui()
@@ -905,6 +985,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_status_summary()
 
     def _new_session(self) -> None:
+        if not self._idle_for_change():
+            return
         confirm = QtWidgets.QMessageBox.question(self, "New session", "Clear all rows and start a new session?")
         if confirm == QtWidgets.QMessageBox.Yes:
             self._push_undo()
@@ -933,17 +1015,25 @@ class MainWindow(QtWidgets.QMainWindow):
         msg.exec()
 
     def _undo(self) -> None:
-        restored = self.undo_manager.undo()
+        if not self._idle_for_change():
+            return
+        restored = self.undo_manager.undo(self.session)
         if restored:
             self.session = restored
             self.session_manager.session = restored
+            self._reset_queue()
             self._reload_rows()
             self.apply_global_settings_to_ui()
+            self.session_manager.autosave()
 
     def _redo(self) -> None:
-        restored = self.undo_manager.redo()
+        if not self._idle_for_change():
+            return
+        restored = self.undo_manager.redo(self.session)
         if restored:
             self.session = restored
             self.session_manager.session = restored
+            self._reset_queue()
             self._reload_rows()
             self.apply_global_settings_to_ui()
+            self.session_manager.autosave()

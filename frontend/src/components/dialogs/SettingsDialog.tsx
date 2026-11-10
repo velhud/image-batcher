@@ -17,30 +17,35 @@ export function SettingsDialog({ isOpen, onClose, state }: SettingsDialogProps) 
   const [rpm, setRpm] = useState(60);
   const [folder, setFolder] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   // Sync state when dialog opens
   useEffect(() => {
     if (isOpen && state) {
+      setError('');
       setConcurrency(state.session.global_settings.concurrency_limit);
       setRpm(state.session.global_settings.rate_limit_rpm);
       setFolder(state.session.global_settings.export_folder || "");
     }
-  }, [isOpen, state]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   const handleSave = async () => {
     setLoading(true);
+    setError('');
     try {
+      if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('Concurrency must be a whole number from 1 to 8.');
+      if (!Number.isInteger(rpm) || rpm < 1 || rpm > 500) throw new Error('The rate limit must be a whole number from 1 to 500.');
       await api.updateGlobalSettings({
         concurrency_limit: concurrency,
         rate_limit_rpm: rpm,
-        export_folder: folder || undefined,
+        export_folder: folder || null,
       });
       await queryClient.invalidateQueries({ queryKey: ['state'] });
       onClose();
     } catch (e) {
-      alert("Failed to save settings");
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -57,6 +62,7 @@ export function SettingsDialog({ isOpen, onClose, state }: SettingsDialogProps) 
         </div>
 
         <div className="p-6 space-y-6">
+          {error && <p role="alert" className="text-red-200 text-sm">{error}</p>}
           {/* Concurrency */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-muted">Concurrency Limit (Threads)</label>

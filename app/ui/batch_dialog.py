@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 from PySide6 import QtCore, QtWidgets
 
-from app.batch_parser import BatchParseResult, parse_batch_input
+from app.batch_parser import BatchParseResult, BatchPromptRow, parse_batch_input
 
 
 class BatchInputDialog(QtWidgets.QDialog):
@@ -13,6 +13,7 @@ class BatchInputDialog(QtWidgets.QDialog):
         self.setWindowTitle("Batch Input")
         self.prompts: List[str] = []
         self.errors: List[str] = []
+        self.rows: List[BatchPromptRow] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -56,7 +57,7 @@ class BatchInputDialog(QtWidgets.QDialog):
         self.apply_mode_combo.addItem("Fill empty rows then append")
         apply_layout.addWidget(self.apply_mode_combo)
         ok_btn = QtWidgets.QPushButton("Apply")
-        ok_btn.clicked.connect(self.accept)
+        ok_btn.clicked.connect(self._apply)
         cancel_btn = QtWidgets.QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         apply_layout.addWidget(ok_btn)
@@ -79,6 +80,7 @@ class BatchInputDialog(QtWidgets.QDialog):
             prompt_append=self.prompt_append_edit.toPlainText(),
         )
         self.prompts = result.prompts
+        self.rows = result.rows
         self.errors = result.errors
         self.preview_list.clear()
         for idx, prompt in enumerate(result.prompts, start=1):
@@ -87,6 +89,13 @@ class BatchInputDialog(QtWidgets.QDialog):
             self.error_label.setText("; ".join(result.errors))
         else:
             self.error_label.setText(f"Parsed {len(self.prompts)} prompts.")
+
+    def _apply(self) -> None:
+        # Reparse the current controls so a stale preview can never be imported.
+        self._on_preview()
+        if self.errors or not self.prompts:
+            return
+        self.accept()
 
     def _on_mode_changed(self) -> None:
         is_csv = self.mode_combo.currentData() == "csv"

@@ -1,4 +1,4 @@
-export type RowStatus = "Idle" | "Queued" | "Generating" | "Completed" | "Error" | "Filtered" | "Cancelled";
+export type RowStatus = "Idle" | "Queued" | "Generating" | "Completed" | "Error" | "Filtered" | "Cancelled" | "Interrupted";
 
 export interface ProviderInfo {
   id: string;
@@ -21,6 +21,12 @@ export interface ProviderCapabilitiesDTO {
   supports_seed: boolean;
   supports_quality: boolean;
   supports_safety: boolean;
+  supports_attachments: boolean;
+  max_attachments: number;
+  supports_custom_size: boolean;
+  output_formats: string[];
+  supports_background: boolean;
+  quality_options: string[];
   size_presets: Record<string, SizePresetDTO>;
 }
 
@@ -43,11 +49,11 @@ export interface GlobalSettingsDTO {
   num_images: number;
   style_preset: string;
   negative_prompt: string;
-  seed?: number;
+  seed?: number | null;
   random_seed: boolean;
   quality: number;
   safety: number;
-  export_folder?: string;
+  export_folder?: string | null;
   naming_pattern: string;
   concurrency_limit: number;
   theme: string;
@@ -59,6 +65,8 @@ export interface GlobalSettingsDTO {
   thinking_budget: number;
   thinking_level: string;
   prompt_wrapper: string;
+  output_format: string;
+  background: string;
 }
 
 export interface ImageResultDTO {
@@ -85,6 +93,8 @@ export interface RowSettingsDTO {
   regen_use_same_seed?: boolean | null;
   thinking_budget?: number | null;
   thinking_level?: string | null;
+  output_format?: string | null;
+  background?: string | null;
 }
 
 export interface RowDTO {
@@ -166,6 +176,30 @@ export interface BatchVerificationDTO {
   failed_prompt_ids: string[];
   missing_prompt_ids: string[];
   skipped_prompt_ids: string[];
+}
+
+export interface PreflightRowDTO {
+  row_id: string;
+  prompt_id: string;
+  provider: string;
+  model: string;
+  requested_images: number;
+  errors: string[];
+}
+
+export interface PreflightDTO {
+  valid: boolean;
+  rows: PreflightRowDTO[];
+  total_requests: number;
+  total_images: number;
+}
+
+export interface ExportBundleDTO {
+  path: string;
+  exported: number;
+  missing: Array<{ row_id: string; kind: string; name: string }>;
+  manifest_path: string;
+  contact_sheet: string | null;
 }
 
 // RPC Response Wrappers

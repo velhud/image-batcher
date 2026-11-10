@@ -20,6 +20,11 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
   const [preview, setPreview] = useState<ParsedBatchRowDTO[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [applyMode, setApplyMode] = useState<'append' | 'replace' | 'fill'>('append');
+  const [promptAppend, setPromptAppend] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [previewSignature, setPreviewSignature] = useState('');
+  const signature = JSON.stringify([text, mode, promptField, csvColumn, promptAppend]);
+  const previewCurrent = previewSignature === signature;
   
   const queryClient = useQueryClient();
 
@@ -27,32 +32,40 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
 
   const parse = async () => {
     setError(null);
+    setBusy(true);
     try {
-      const result = await api.parseBatch(text, mode, promptField, csvColumn);
+      const result = await api.parseBatch(text, mode, promptField, csvColumn, promptAppend);
       setPreview(result.rows);
-      setError(result.errors.length ? result.errors.slice(0, 3).join("; ") : null);
+      setPreviewSignature(signature);
+      setError(result.errors.length ? result.errors.join("; ") : null);
     } catch (e: any) {
       setError(e.message || "Parse error");
       setPreview([]);
+    } finally {
+      setBusy(false);
     }
   };
 
   const handleImport = async () => {
-    let finalPreview = preview;
-    if (finalPreview.length === 0) {
-      const result = await api.parseBatch(text, mode, promptField, csvColumn);
-      finalPreview = result.rows;
-      setPreview(result.rows);
-      if (!result.rows.length) {
-        setError(result.errors.join("; ") || "No prompts parsed");
-        return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.parseBatch(text, mode, promptField, csvColumn, promptAppend);
+      setPreview(result.rows); setPreviewSignature(signature);
+      if (result.errors.length || !result.rows.length) {
+        setError(result.errors.join('; ') || 'No prompts parsed'); return;
       }
+      if (applyMode === 'replace' && !confirm(`Replace current rows with ${result.rows.length} imported rows?`)) return;
+      const imported = await api.importBatch(text, mode, promptField, csvColumn, applyMode, promptAppend);
+      if (imported.errors.length) { setError(imported.errors.join('; ')); return; }
+      await queryClient.invalidateQueries({ queryKey: ['state'] });
+      setText(''); setPreview([]); setPreviewSignature('');
+      onClose();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
     }
-    await api.importBatch(text, mode, promptField, csvColumn, applyMode);
-    queryClient.invalidateQueries({ queryKey: ['state'] });
-    setText("");
-    setPreview([]);
-    onClose();
   };
 
   return (
@@ -63,7 +76,7 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
             <FileSpreadsheet size={18} className="text-primary" /> 
             Batch Input
           </h2>
-          <button onClick={onClose}><X size={20} className="text-text-muted hover:text-white" /></button>
+          <button onClick={onClose} disabled={busy} aria-label="Close batch input"><X size={20} className="text-text-muted hover:text-white" /></button>
         </div>
 
         <div className="flex-1 flex overflow-hidden">
@@ -80,6 +93,7 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
                         ].map((m) => (
                             <button
                                 key={m.id}
+                                disabled={busy}
                                 onClick={() => setMode(m.id as BatchMode)}
                                 className={`flex items-center gap-2 px-3 py-2 rounded text-sm text-left transition-colors ${mode === m.id ? 'bg-primary/20 text-primary border border-primary/20' : 'hover:bg-white/5 text-text-muted'}`}
                             >
@@ -92,14 +106,14 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
                 {(mode === 'json_array' || mode === 'json_lines') && (
                     <div className="space-y-1">
                         <label className="text-xs text-text-muted">Field Name</label>
-                        <input className="w-full bg-surface border border-white/10 rounded p-2 text-sm" value={promptField} onChange={e => setPromptField(e.target.value)} />
+                        <input disabled={busy} className="w-full bg-surface border border-white/10 rounded p-2 text-sm" value={promptField} onChange={e => setPromptField(e.target.value)} />
                     </div>
                 )}
 
                 {mode === 'csv' && (
                     <div className="space-y-1">
                         <label className="text-xs text-text-muted">Column (Name or Index)</label>
-                        <input className="w-full bg-surface border border-white/10 rounded p-2 text-sm" value={csvColumn} onChange={e => setCsvColumn(e.target.value)} />
+                        <input disabled={busy} className="w-full bg-surface border border-white/10 rounded p-2 text-sm" value={csvColumn} onChange={e => setCsvColumn(e.target.value)} />
                     </div>
                 )}
 
@@ -108,6 +122,7 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
                     <select
                         className="w-full bg-surface border border-white/10 rounded p-2 text-sm"
                         value={applyMode}
+                        disabled={busy}
                         onChange={e => setApplyMode(e.target.value as 'append' | 'replace' | 'fill')}
                     >
                         <option value="append">Append rows</option>
@@ -116,7 +131,13 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
                     </select>
                 </div>
 
-                <Button variant="secondary" onClick={() => parse()} className="w-full">Update Preview</Button>
+                <div className="space-y-1">
+                    <label htmlFor="batch-prompt-append" className="text-xs text-text-muted">Append to every parsed prompt</label>
+                    <textarea id="batch-prompt-append" disabled={busy} value={promptAppend} onChange={event => setPromptAppend(event.target.value)}
+                      rows={4} className="w-full bg-surface border border-white/10 rounded p-2 text-xs resize-y" placeholder="Shared style, context, or constraints" />
+                </div>
+
+                <Button variant="secondary" disabled={busy} onClick={() => parse()} className="w-full">{busy ? 'Working…' : 'Update Preview'}</Button>
             </div>
 
             <div className="flex-1 flex flex-col min-w-0">
@@ -125,6 +146,8 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
                         <label className="text-xs text-text-muted">Input Data</label>
                         <textarea 
                             value={text}
+                            disabled={busy}
+                            aria-label="Batch input data"
                             onChange={e => setText(e.target.value)}
                             className="flex-1 bg-black/30 border border-white/10 rounded p-3 font-mono text-sm resize-none focus:ring-1 focus:ring-primary outline-none"
                             placeholder="Paste text here..."
@@ -133,9 +156,9 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
                     
                     <div className="h-1/3 flex flex-col gap-2 min-h-0">
                         <div className="flex justify-between items-center">
-                            <label className="text-xs text-text-muted">Preview ({preview.length} prompts)</label>
-                            {error && <span className="text-xs text-red-400">{error}</span>}
+                            <label className="text-xs text-text-muted">Preview ({preview.length} prompts){!previewCurrent && preview.length ? ' · update required' : ''}</label>
                         </div>
+                        {error && <p role="alert" className="text-xs text-red-300 whitespace-pre-wrap">{error}</p>}
                         <div className="flex-1 bg-black/50 border border-white/10 rounded p-2 overflow-y-auto font-mono text-xs text-text-muted">
                             {preview.length === 0 ? (
                                 <div className="h-full flex items-center justify-center opacity-30">No preview generated</div>
@@ -163,8 +186,8 @@ export function BatchDialog({ isOpen, onClose }: BatchDialogProps) {
         </div>
 
         <div className="p-4 border-t border-white/10 bg-white/5 flex justify-end gap-3">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleImport} disabled={preview.length === 0}>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={handleImport} disabled={busy || preview.length === 0 || !previewCurrent || !!error}>
             Import {preview.length} Rows
           </Button>
         </div>

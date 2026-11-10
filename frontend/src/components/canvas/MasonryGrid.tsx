@@ -11,7 +11,7 @@ export function MasonryGrid({ session }: MasonryGridProps) {
   const allImages = session.rows.flatMap(row => 
     row.images.map(img => ({
       ...img,
-      prompt: row.prompt,
+      prompt: String(img.metadata?.original_prompt || row.prompt),
       rowStatus: row.status
     }))
   ).reverse(); // Newest first

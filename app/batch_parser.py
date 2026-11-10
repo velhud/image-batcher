@@ -32,7 +32,9 @@ def parse_batch_input(
     csv_column: Optional[str] = None,
     prompt_append: str = "",
 ) -> BatchParseResult:
-    raw = raw.strip()
+    if not isinstance(raw, str):
+        return BatchParseResult([], ["Input must be text"])
+    raw = raw.lstrip("\ufeff").strip()
     if not raw:
         return BatchParseResult(prompts=[], errors=["Input is empty"])
     if mode == "lines":
@@ -64,8 +66,8 @@ def parse_batch_input(
                     prompt = append_prompt_text(item, prompt_append)
                     prompts.append(prompt)
                     rows_out.append(BatchPromptRow(prompt=prompt))
-                elif isinstance(item, dict) and prompt_field in item:
-                    prompt = append_prompt_text(str(item[prompt_field]), prompt_append)
+                elif isinstance(item, dict) and isinstance(item.get(prompt_field), str) and item[prompt_field].strip():
+                    prompt = append_prompt_text(item[prompt_field], prompt_append)
                     prompts.append(prompt)
                     rows_out.append(_row_from_mapping(item, prompt_field, prompt, prompt_append=prompt_append))
                 else:
@@ -85,23 +87,23 @@ def parse_batch_input(
             except Exception as exc:
                 errors.append(f"Line {idx}: {exc}")
                 continue
-            if isinstance(obj, dict) and prompt_field in obj:
-                prompt = append_prompt_text(str(obj[prompt_field]), prompt_append)
+            if isinstance(obj, dict) and isinstance(obj.get(prompt_field), str) and obj[prompt_field].strip():
+                prompt = append_prompt_text(obj[prompt_field], prompt_append)
                 prompts.append(prompt)
                 rows_out.append(_row_from_mapping(obj, prompt_field, prompt, prompt_append=prompt_append))
             else:
-                errors.append(f"Line {idx}: missing '{prompt_field}'")
+                errors.append(f"Line {idx}: '{prompt_field}' must be nonempty text")
         return BatchParseResult(prompts=prompts, errors=errors, rows=rows_out)
     if mode == "csv":
         prompts: List[str] = []
         rows_out: List[BatchPromptRow] = []
         errors: List[str] = []
         try:
-            reader = csv.reader(StringIO(raw))
+            reader = csv.reader(StringIO(raw), strict=True)
             rows = list(reader)
             if not rows:
                 return BatchParseResult([], ["CSV empty"])
-            headers = rows[0]
+            headers = [value.strip() for value in rows[0]]
             has_header = bool(headers) and (csv_column is None or not csv_column.isdigit())
             body = rows[1:] if has_header else rows
             col_idx = None
@@ -111,7 +113,15 @@ def parse_batch_input(
                 elif csv_column in headers:
                     col_idx = headers.index(csv_column)
             if col_idx is None:
-                col_idx = 0
+                if has_header:
+                    requested = csv_column or prompt_field
+                    if requested not in headers:
+                        return BatchParseResult([], [f"CSV column '{requested}' was not found; available columns: {', '.join(headers)}"])
+                    col_idx = headers.index(requested)
+                else:
+                    col_idx = 0
+            if has_header and len(set(headers)) != len(headers):
+                return BatchParseResult([], ["CSV header contains duplicate column names"])
             for idx, row in enumerate(body, start=1):
                 if col_idx >= len(row):
                     errors.append(f"Line {idx}: column {col_idx} missing")

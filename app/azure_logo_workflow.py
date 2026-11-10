@@ -13,6 +13,13 @@ def apply_azure_logo_preset(settings: GlobalSettings) -> GlobalSettings:
     settings.size_preset = "Square 1024"
     settings.custom_size = None
     settings.num_images = 1
+    settings.output_format = "png"
+    settings.background = "auto"
+    settings.style_preset = "None"
+    settings.negative_prompt = ""
+    settings.seed = None
+    settings.random_seed = True
+    settings.safety = 2
     settings.quality = 5
     settings.rate_limit_rpm = 4
     settings.concurrency_limit = 1

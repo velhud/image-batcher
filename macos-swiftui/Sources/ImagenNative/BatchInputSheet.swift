@@ -1,55 +1,103 @@
 import SwiftUI
 
+@MainActor
 struct BatchInputSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var appModel: AppViewModel
     @State private var rawText = ""
     @State private var mode: BatchMode = .lines
-    @State private var preview: [String] = []
+    @State private var preview: BatchParseResponse?
+    @State private var previewPayload: BatchInputPayload?
     @State private var error: String?
     @State private var applyMode: ApplyMode = .append
     @State private var promptField = "prompt"
     @State private var csvColumn = "prompt"
+    @State private var promptAppend = ""
+    @State private var isBusy = false
+
+    private var payload: BatchInputPayload {
+        BatchInputPayload(raw: rawText, mode: mode.rawValue, prompt_field: promptField,
+                          csv_column: csvColumn, prompt_append: promptAppend, apply_mode: applyMode.rawValue)
+    }
+
+    private var canApply: Bool {
+        !isBusy && !appModel.isMutating && previewPayload == payload &&
+        preview?.rows.isEmpty == false && preview?.errors.isEmpty == true
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("Batch input").font(.title2)
             Picker("Mode", selection: $mode) {
                 ForEach(BatchMode.allCases, id: \.self) { Text($0.title).tag($0) }
             }.pickerStyle(.segmented)
-            TextField("Prompt field (JSON)", text: $promptField)
-            TextField("CSV column (name or index)", text: $csvColumn)
+            if mode == .json_array || mode == .json_lines { TextField("Prompt field", text: $promptField) }
+            if mode == .csv { TextField("CSV column (name or zero-based index)", text: $csvColumn) }
             TextEditor(text: $rawText).frame(minHeight: 150)
+            TextField("Append to every prompt", text: $promptAppend)
             HStack {
-                Button("Preview") { parse() }
+                Button("Preview") { Task { await parse() } }.disabled(isBusy || rawText.isEmpty)
+                if isBusy { ProgressView().controlSize(.small) }
                 Spacer()
-                Text(error ?? " ")
-                    .foregroundColor(.red)
+                if previewPayload != nil && previewPayload != payload { Text("Input changed; preview again.").font(.caption) }
             }
-            List(preview, id: \.self) { Text($0) }
-            Picker("Apply", selection: $applyMode) {
-                ForEach(ApplyMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            HStack {
-                Spacer()
-                Button("Apply") {
-                    Task {
-                        if preview.isEmpty { parse() }
-                        await appModel.addRows(prompts: preview)
-                        dismiss()
+            if let error { Text(error).foregroundColor(.red).textSelection(.enabled) }
+            if let preview {
+                Text("\(preview.rows.count) prompts · \(preview.errors.count) errors").font(.caption)
+                if !preview.errors.isEmpty {
+                    Text(preview.errors.joined(separator: "\n")).font(.caption).foregroundColor(.red).textSelection(.enabled)
+                }
+                List(Array(preview.rows.enumerated()), id: \.offset) { item in
+                    VStack(alignment: .leading) {
+                        if !item.element.prompt_id.isEmpty {
+                            Text("\(item.element.category_id) / \(item.element.prompt_id)").font(.caption).foregroundColor(.secondary)
+                        }
+                        Text(item.element.prompt)
                     }
-                }.disabled(preview.isEmpty)
-                Button("Cancel", role: .cancel) { dismiss() }
+                }
+            }
+            Picker("Apply", selection: $applyMode) {
+                ForEach(ApplyMode.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            HStack {
+                Spacer()
+                Button("Apply") { Task { await apply() } }.disabled(!canApply)
+                Button("Cancel", role: .cancel) { dismiss() }.disabled(isBusy)
             }
         }
         .padding()
-        .frame(minWidth: 500, minHeight: 400)
+        .frame(minWidth: 600, minHeight: 550)
     }
 
-    private func parse() {
-        let parser = BatchParser()
-        let result = parser.parse(text: rawText, mode: mode, promptField: promptField, csvColumn: csvColumn)
-        preview = result.prompts
-        error = result.errors.first
+    @MainActor private func parse() async {
+        let requested = payload
+        isBusy = true
+        error = nil
+        defer { isBusy = false }
+        do {
+            preview = try await appModel.client.parseBatch(requested)
+            previewPayload = requested
+        } catch { self.error = error.localizedDescription; preview = nil; previewPayload = nil }
+    }
+
+    @MainActor private func apply() async {
+        guard canApply else { return }
+        isBusy = true
+        error = nil
+        defer { isBusy = false }
+        do {
+            let response = try await appModel.importBatch(payload)
+            if response.errors.isEmpty { dismiss() }
+            else {
+                error = "Import was not applied: " + response.errors.joined(separator: "; ")
+                preview = nil
+                previewPayload = nil
+            }
+        } catch {
+            self.error = error.localizedDescription + " Review the current rows before applying again."
+            preview = nil
+            previewPayload = nil
+        }
     }
 }
 
@@ -67,73 +115,12 @@ enum BatchMode: String, CaseIterable {
 }
 
 enum ApplyMode: String, CaseIterable {
-    case append = "Append new rows"
-    case replace = "Replace all rows"
-    case fill = "Fill empty then append"
-}
-
-struct BatchParseResult {
-    let prompts: [String]
-    let errors: [String]
-}
-
-final class BatchParser {
-    func parse(text: String, mode: BatchMode, promptField: String, csvColumn: String) -> BatchParseResult {
-        let lines = text.split(separator: "\n").map { String($0) }
-        switch mode {
-        case .lines:
-            return BatchParseResult(prompts: lines.filter { !$0.isEmpty }, errors: [])
-        case .numbered:
-            var prompts: [String] = []
-            var errors: [String] = []
-            for line in lines {
-                if let idx = line.firstIndex(where: { $0 == ")" || $0 == "." || $0 == "-" }) {
-                    let prompt = line[line.index(after: idx)...].trimmingCharacters(in: .whitespaces)
-                    prompts.append(prompt)
-                } else {
-                    errors.append("Could not parse \(line)")
-                }
-            }
-            return BatchParseResult(prompts: prompts, errors: errors)
-        case .json_array:
-            if let data = text.data(using: .utf8),
-               let arr = try? JSONSerialization.jsonObject(with: data) as? [Any] {
-                let prompts = arr.compactMap { item -> String? in
-                    if let s = item as? String { return s }
-                    if let dict = item as? [String: Any], let p = dict[promptField] { return "\(p)" }
-                    return nil
-                }
-                return BatchParseResult(prompts: prompts, errors: [])
-            }
-            return BatchParseResult(prompts: [], errors: ["JSON parse error"])
-        case .json_lines:
-            var prompts: [String] = []
-            var errors: [String] = []
-            for line in lines where !line.isEmpty {
-                if let data = line.data(using: .utf8),
-                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let p = obj[promptField] {
-                    prompts.append("\(p)")
-                } else {
-                    errors.append("Bad JSON line")
-                }
-            }
-            return BatchParseResult(prompts: prompts, errors: errors)
-        case .csv:
-            var prompts: [String] = []
-            var errors: [String] = []
-            let rows = lines.map { $0.split(separator: ",").map { String($0) } }
-            guard !rows.isEmpty else { return BatchParseResult(prompts: [], errors: ["Empty CSV"]) }
-            let hasHeader = Int(csvColumn) == nil
-            let body = hasHeader ? Array(rows.dropFirst()) : rows
-            let headers = hasHeader ? rows.first ?? [] : []
-            let idx: Int
-            if let n = Int(csvColumn) { idx = n } else { idx = headers.firstIndex(of: csvColumn) ?? 0 }
-            for (i, row) in body.enumerated() {
-                if idx < row.count { prompts.append(row[idx]) }
-                else { errors.append("Missing column at line \(i)") }
-            }
-            return BatchParseResult(prompts: prompts, errors: errors)
+    case append, replace, fill
+    var title: String {
+        switch self {
+        case .append: return "Append new rows"
+        case .replace: return "Replace all rows"
+        case .fill: return "Fill empty, then append"
         }
     }
 }

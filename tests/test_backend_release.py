@@ -1,0 +1,112 @@
+import threading
+import time
+from http.server import HTTPServer
+
+import pytest
+import requests
+
+from app import backend_server
+from app.models import GeneratedImage
+from app.providers.base import BaseProvider
+
+
+@pytest.fixture
+def backend(monkeypatch):
+    state = backend_server.BackendState(restore=False)
+    monkeypatch.setattr(backend_server, 'STATE', state)
+    yield state
+    state.queue.shutdown()
+
+
+def test_active_session_changes_are_rejected_without_losing_outputs(backend, tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    class BlockedProvider(BaseProvider):
+        id = 'blocked'
+        name = 'Blocked test provider'
+        def __init__(self):
+            super().__init__([])
+        def generate_images(self, prompt, settings, output_dir, cancel_event, attachments=None, context=None):
+            entered.set()
+            assert release.wait(3)
+            from PIL import Image
+            output_dir.mkdir(parents=True, exist_ok=True)
+            target = output_dir / 'done.png'
+            Image.new('RGB', (4,4)).save(target)
+            return [GeneratedImage(target)]
+    backend.registry.register(BlockedProvider())
+    backend.dispatch('global_settings', {'provider_id': 'blocked', 'model_id': 'blocked-v1'})
+    row_id = backend.dispatch('add_rows', {'prompts': ['test']})['rows'][0]['id']
+    original_id = backend.session.id
+    backend.dispatch('generate_rows', {'row_ids': [row_id]})
+    assert entered.wait(2)
+    try:
+        with pytest.raises(ValueError, match='active work'):
+            backend.dispatch('new_session', {})
+        with pytest.raises(ValueError, match='active work'):
+            backend.dispatch('global_settings', {'concurrency_limit': 3})
+        assert backend.session.id == original_id
+        assert backend.session.global_settings.concurrency_limit == 2
+    finally:
+        release.set()
+    deadline = time.monotonic() + 3
+    while not backend.queue.is_idle() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert backend.session.rows[0].images
+    assert backend.session.rows[0].status.value == 'Completed'
+
+
+def test_bad_global_patch_is_atomic(backend):
+    before = backend.session.global_settings.to_dict()
+    with pytest.raises(ValueError):
+        backend.dispatch('global_settings', {'num_images': 0, 'provider_id': 'openai'})
+    assert backend.session.global_settings.to_dict() == before
+
+
+def test_preflight_rejects_all_before_any_submission(backend):
+    rows = backend.dispatch('add_rows', {'prompts': ['valid', '']})['rows']
+    with pytest.raises(ValueError, match='validation'):
+        backend.dispatch('generate_rows', {'row_ids': [row['id'] for row in rows]})
+    assert backend.queue.is_idle()
+    assert all(row.status.value == 'Idle' for row in backend.session.rows)
+
+
+@pytest.mark.parametrize('provider', ['openai', 'azure-openai'])
+def test_preflight_checks_wrapped_prompt_length_before_any_admission(backend, monkeypatch, provider):
+    backend.dispatch('global_settings', {'provider_id': provider, 'model_id': 'gpt-image-2', 'prompt_wrapper': 'Shared instructions'})
+    backend.dispatch('add_rows', {'prompts': ['valid', 'a' * 31999]})
+    admitted = []
+    monkeypatch.setattr(backend.queue, 'enqueue', lambda *args, **kwargs: admitted.append(args))
+    report = backend.dispatch('preflight', {})
+    assert not report['valid']
+    assert not report['rows'][0]['errors']
+    assert '32,000' in report['rows'][1]['errors'][0]
+    with pytest.raises(ValueError, match='32,000'):
+        backend.dispatch('generate_rows', {})
+    assert admitted == []
+
+
+def test_invalid_import_does_not_partially_replace_rows(backend):
+    backend.dispatch('add_rows', {'prompts': ['keep']})
+    result = backend.dispatch('import_batch', {'raw': '["valid", {"prompt":null}]', 'mode': 'json_array', 'apply_mode': 'replace'})
+    assert result['errors']
+    assert [row.prompt for row in backend.session.rows] == ['keep']
+
+
+def test_rpc_rejects_untrusted_origin_and_bad_envelope(backend):
+    server = HTTPServer(('127.0.0.1', 0), backend_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f'http://127.0.0.1:{server.server_address[1]}/rpc'
+    try:
+        denied = requests.post(url, json={'action':'new_session'}, headers={'Origin':'https://unrelated.example'}, timeout=3)
+        assert denied.status_code == 403
+        assert 'Access-Control-Allow-Origin' not in denied.headers
+        malformed = requests.post(url, json=[], timeout=3)
+        assert malformed.status_code == 400
+        wrong_path = requests.post(url.replace('/rpc','/other'), json={'action':'state'}, timeout=3)
+        assert wrong_path.status_code == 404
+        valid = requests.post(url, json={'action':'state'}, headers={'Origin':'http://localhost:5173'}, timeout=3)
+        assert valid.status_code == 200
+        assert valid.headers['Access-Control-Allow-Origin'] == 'http://localhost:5173'
+    finally:
+        server.shutdown(); server.server_close(); thread.join(2)

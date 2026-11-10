@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import { Sidebar } from '@/components/layout/Sidebar';
@@ -13,6 +13,7 @@ import { useSession } from '@/hooks/useSession';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import { Loader2, FolderOpen, Save, RotateCcw, RotateCw, Filter, BarChart2 } from 'lucide-react';
 import { Button } from '@/components/common/Button';
+import { API_ERROR_EVENT, errorMessage, runAction } from '@/lib/feedback';
 
 function App() {
   const queryClient = useQueryClient();
@@ -23,14 +24,19 @@ function App() {
   } = useSession();
   const [tagFilter, setTagFilter] = useState("");
   const [isStatsOpen, setStatsOpen] = useState(false);
+  const [actionError, setActionError] = useState('');
+  useEffect(() => {
+    const listener = (event: Event) => setActionError((event as CustomEvent<string>).detail);
+    window.addEventListener(API_ERROR_EVENT, listener);
+    return () => window.removeEventListener(API_ERROR_EVENT, listener);
+  }, []);
 
-  const { data: state, isLoading } = useQuery({
+  const { data: state, isLoading, error } = useQuery({
     queryKey: ['state'],
     queryFn: api.fetchState,
     refetchInterval: (query) => {
       if (!query.state.data) return 1000;
-      const stats = query.state.data.stats;
-      const isGenerating = stats.total > (stats.completed + stats.errors);
+      const isGenerating = query.state.data.session.rows.some(row => row.status === 'Queued' || row.status === 'Generating');
       return isGenerating ? 500 : 2000;
     }
   });
@@ -39,18 +45,24 @@ function App() {
   useHotkeys('cmd+enter', () => {
     if (!state) return;
     const ids = state.session.rows.filter(r => r.selected).map(r => r.id);
-    if (ids.length) api.generateRows(ids);
+    if (ids.length) runAction(async () => {
+      const report = await api.preflight(ids);
+      if (!report.valid) throw new Error(report.rows.flatMap(row => row.errors).join('\n'));
+      if (state.session.rows.some(row => ids.includes(row.id) && row.status === 'Interrupted') && !confirm('Some selected requests were interrupted and may have completed at the provider. Start new requests?')) return;
+      if (report.total_images >= state.session.global_settings.confirm_generate_threshold && !confirm(`Generate ${report.total_images} images across ${report.total_requests} requests?`)) return;
+      await api.generateRows(ids);
+    });
   });
   
-  useHotkeys('cmd+n', async () => {
+  useHotkeys('cmd+n', () => runAction(async () => {
      await api.addRows([""]);
-     queryClient.invalidateQueries({ queryKey: ['state'] });
-  });
+     await queryClient.invalidateQueries({ queryKey: ['state'] });
+  }));
 
-  useHotkeys('cmd+z', async () => {
+  useHotkeys('cmd+z', () => runAction(async () => {
      await api.undo();
-     queryClient.invalidateQueries({ queryKey: ['state'] });
-  });
+     await queryClient.invalidateQueries({ queryKey: ['state'] });
+  }));
 
   if (isLoading && !state) {
     return (
@@ -60,7 +72,11 @@ function App() {
     );
   }
 
-  if (!state) return null;
+  if (!state) return <div className="h-screen flex flex-col items-center justify-center bg-background text-text-main gap-4 px-8">
+    <h1 className="text-xl font-semibold">ImageAI backend unavailable</h1>
+    <p role="alert" className="text-text-muted text-sm max-w-xl text-center">{errorMessage(error || 'Waiting for the local backend.')}</p>
+    <Button onClick={() => runAction(() => queryClient.invalidateQueries({ queryKey: ['state'] }))}>Reconnect</Button>
+  </div>;
 
   const filteredRows = tagFilter.trim()
     ? state.session.rows.filter((row) => (row.tags || []).some((t) => t.toLowerCase().includes(tagFilter.trim().toLowerCase())))
@@ -117,17 +133,17 @@ function App() {
 
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="icon" onClick={handleUndo} title="Undo">
+              <Button variant="ghost" size="icon" onClick={() => runAction(handleUndo)} title="Undo">
                 <RotateCcw size={16}/>
               </Button>
-              <Button variant="ghost" size="icon" onClick={handleRedo} title="Redo">
+              <Button variant="ghost" size="icon" onClick={() => runAction(handleRedo)} title="Redo">
                 <RotateCw size={16}/>
               </Button>
               <div className="h-4 w-px bg-white/10 mx-1" />
-              <Button variant="ghost" size="icon" onClick={handleSave} title="Quick Save">
+              <Button variant="ghost" size="icon" onClick={() => runAction(handleSave)} title="Quick Save">
                 <Save size={16}/>
               </Button>
-              <Button variant="ghost" size="icon" onClick={handleLoad} title="Open Session">
+              <Button variant="ghost" size="icon" onClick={() => runAction(handleLoad)} title="Open Session">
                 <FolderOpen size={16}/>
               </Button>
               <Button variant="ghost" size="icon" onClick={() => setStatsOpen(true)} title="Statistics">
@@ -138,11 +154,15 @@ function App() {
             <GlobalControls state={state} />
           </div>
         </header>
+        {(actionError || error) && <div role="alert" className="flex gap-3 items-start px-6 py-3 bg-red-500/10 border-b border-red-400/20 text-red-200 text-sm">
+          <p className="flex-1 whitespace-pre-wrap break-words">{actionError || errorMessage(error)}</p>
+          {actionError && <button aria-label="Dismiss error" onClick={() => setActionError('')}>Dismiss</button>}
+        </div>}
 
         {/* Workspace */}
         <div className="flex-1 p-8 overflow-y-auto scroll-smooth">
            {activeView === 'list' ? (
-             <ListView rows={filteredRows} globalSettings={state.session.global_settings} />
+             <ListView rows={filteredRows} globalSettings={state.session.global_settings} providers={state.providers} />
            ) : (
              <MasonryGrid session={filteredSession} />
            )}

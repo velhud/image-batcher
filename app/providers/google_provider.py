@@ -1,18 +1,22 @@
 from __future__ import annotations
 
-import base64
-import mimetypes
+import json
 import os
 from math import gcd
 from pathlib import Path
 from threading import Event
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
-from app.models import DEFAULT_SIZE_PRESETS, GeneratedImage, GenerationContext, GlobalSettings, ModelInfo, ProviderCapabilities
-from .base import BaseProvider
+from app.models import GeneratedImage, GenerationContext, GlobalSettings, ModelInfo, ProviderCapabilities
+from .base import BaseProvider, ProviderCancelledError, ProviderFilteredError, ProviderGenerationError
+from .http_transport import post_json
+from .image_io import dimensions, read_attachments, save_base64_image
 
-NANO_MODEL_ID = "gemini-2.5-flash-image"
-PRO_MODEL_ID = "gemini-3-pro-image-preview"
+
+NANO_MODEL_ID = "gemini-3.1-flash-image"
+PRO_MODEL_ID = "gemini-3-pro-image"
+COMMON_ASPECT_RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "7:3"}
+FLASH_ASPECT_RATIOS = COMMON_ASPECT_RATIOS | {"1:4", "4:1", "1:8", "8:1"}
 
 
 class GoogleGeminiProvider(BaseProvider):
@@ -20,252 +24,154 @@ class GoogleGeminiProvider(BaseProvider):
     name = "Google Gemini"
 
     def __init__(self) -> None:
-        base_capabilities = ProviderCapabilities(
-            max_images=4,
-            supports_style=False,
-            supports_negative_prompt=True,
-            supports_seed=False,
-            supports_quality=False,
-            supports_safety=True,
-        )
-        nano_caps = ProviderCapabilities(**base_capabilities.__dict__)
-        pro_caps = ProviderCapabilities(**base_capabilities.__dict__)
-        models = [
-            ModelInfo(
-                id=NANO_MODEL_ID,
-                name="Nano Banana (Gemini 2.5 Flash Image)",
-                provider_id=self.id,
-                capabilities=nano_caps,
-            ),
-            ModelInfo(
-                id=PRO_MODEL_ID,
-                name="Nano Banana Pro (Gemini 3 Pro Image Preview)",
-                provider_id=self.id,
-                capabilities=pro_caps,
-            ),
-        ]
-        super().__init__(models, rate_limit_note="Gemini API via GEMINI_API_KEY (.env)")
+        models = [ModelInfo(model_id, name, self.id, ProviderCapabilities(
+            max_images=4, supports_style=False, supports_negative_prompt=True,
+            supports_seed=False, supports_quality=False, supports_safety=False,
+            supports_attachments=True, max_attachments=14, supports_custom_size=True,
+            output_formats=["png"], supports_background=False,
+        )) for model_id, name in (
+            (NANO_MODEL_ID, "Gemini 3.1 Flash Image"), (PRO_MODEL_ID, "Gemini 3 Pro Image"),
+        )]
+        super().__init__(models, rate_limit_note=(
+            "One request per requested image. Inline references total at most 12 MiB. "
+            "Custom dimensions select a supported aspect ratio and resolution tier; the provider controls exact pixels and raster format."
+        ))
 
-    def generate_images(
-        self,
-        prompt: str,
-        settings: GlobalSettings,
-        output_dir: Path,
-        cancel_event: Event,
-        attachments: List[Any] = [],
-        context: GenerationContext | None = None,
-    ) -> List[GeneratedImage]:
-        api_key = os.environ.get("GEMINI_API_KEY")
+    def request_count(self, settings: GlobalSettings) -> int:
+        return settings.num_images
+
+    def quota_cost(self, settings: GlobalSettings) -> int:
+        return settings.num_images
+
+    def validate_settings(self, settings: GlobalSettings, attachments: list[object] | None = None) -> ModelInfo | None:
+        model = super().validate_settings(settings, attachments)
+        model_id = model.id if model else NANO_MODEL_ID
+        aspect = self._aspect_ratio_from_settings(settings)
+        ratios = FLASH_ASPECT_RATIOS if model_id == NANO_MODEL_ID else COMMON_ASPECT_RATIOS
+        # 21:9 is sent in its documented spelling instead of reduced 7:3.
+        if aspect not in {"21:9" if value == "7:3" else value for value in ratios}:
+            raise ProviderGenerationError("Gemini requires a supported aspect ratio, for example 1:1, 2:3, 3:2, 16:9, or 21:9.", status="invalid_settings")
+        width, height = dimensions(settings)
+        if max(width, height) > 16384:
+            raise ProviderGenerationError("Gemini dimensions exceed the app's maximum of 16,384 pixels per edge.", status="invalid_settings")
+        if settings.thinking_budget not in {None, 0}:
+            raise ProviderGenerationError("Current Gemini image models do not use the legacy thinking budget; reset it to 0.", status="invalid_settings")
+        if model_id == NANO_MODEL_ID and settings.thinking_level not in {"minimal", "high", ""}:
+            raise ProviderGenerationError("Gemini 3.1 Flash Image thinking level must be minimal or high.", status="invalid_settings")
+        return model
+
+    def generate_images(self, prompt: str, settings: GlobalSettings, output_dir: Path,
+                        cancel_event: Event, attachments: list[object] | None = None,
+                        context: GenerationContext | None = None) -> list[GeneratedImage]:
+        self.validate_settings(settings, attachments)
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if not api_key:
-            raise RuntimeError("Missing GEMINI_API_KEY. Add it to the project .env.")
-        try:
-            import requests  # type: ignore
-        except Exception as exc:  # pragma: no cover - import-time guard
-            raise RuntimeError(f"requests package not available: {exc}") from exc
-
-        known_models = {m.id for m in self.models}
+            raise ProviderGenerationError("Missing GEMINI_API_KEY for Google Gemini.", status="invalid_settings")
         model_id = settings.model_id or NANO_MODEL_ID
-        if model_id not in known_models:
-            model_id = NANO_MODEL_ID
-        url = self._endpoint_for_model(model_id)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        count = max(1, min(settings.num_images or 1, 4))
-        paths: List[GeneratedImage] = []
-        for idx in range(count):
-            if cancel_event.is_set():
-                break
-            body = self._build_request_body(prompt, settings, model_id, attachments)
-            self._log_request(model_id, body, attachments)
-            try:
-                response = requests.post(
-                    url,
-                    headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                    json=body,
-                    timeout=120,
-                )
-            except Exception as exc:  # pragma: no cover - network runtime
-                raise RuntimeError(f"Gemini request failed: {exc}") from exc
-            if cancel_event.is_set():
-                break
-            if not response.ok:
-                self._log_response_error(response)
-                raise RuntimeError(f"Gemini error {response.status_code}: {response.text}")
-
-            data = response.json()
-            images = self._extract_inline_images(data)
-            if not images:
-                raise RuntimeError("No inline image data in Gemini response.")
-
-            for part_idx, (b64_data, mime_type) in enumerate(images):
+        # Prepare once so every request in this row uses the same reference bytes.
+        references = read_attachments(attachments or [])
+        body = self._build_request_body(prompt, settings, model_id, references=references)
+        if len(json.dumps(body).encode("utf-8")) >= 20_000_000:
+            raise ProviderGenerationError("Gemini inline request exceeds 20 MB; use fewer or smaller reference images.", status="invalid_settings")
+        paths: list[GeneratedImage] = []
+        try:
+            for index in range(settings.num_images):
                 if cancel_event.is_set():
-                    break
-                ext = self._extension_from_mime(mime_type)
-                file_name = f"{model_id.replace('-', '_')}_{idx}_{part_idx}.{ext}"
-                raw = base64.b64decode(b64_data)
-                path = output_dir / file_name
-                with open(path, "wb") as f:
-                    f.write(raw)
-                paths.append(
-                    GeneratedImage(
-                        file_path=path,
-                        metadata={
-                            "provider": self.id,
-                            "model": model_id,
-                            "mime_type": mime_type,
-                            "output_format": ext,
-                        },
-                    )
+                    if paths:
+                        return paths
+                    raise ProviderCancelledError()
+                response, request_metadata = post_json(
+                    self._endpoint_for_model(model_id),
+                    {"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                    body, cancel_event, provider="Gemini",
                 )
-
-        if cancel_event.is_set() and not paths:
-            raise RuntimeError("Cancelled")
-        if not paths:
-            raise RuntimeError("Gemini did not return any images.")
+                images = self._extract_inline_images(response)
+                if not images:
+                    reason = self._filter_reason(response)
+                    if reason:
+                        raise ProviderFilteredError(f"Gemini blocked this request: {reason}.", metadata=request_metadata)
+                    raise ProviderGenerationError("Gemini returned no final image data.", metadata=request_metadata)
+                for part_index, (encoded, mime_type) in enumerate(images):
+                    run = (context.run_index if context else 1) + len(paths)
+                    paths.append(save_base64_image(encoded, output_dir, f"gemini_run{run:02d}", {
+                        **request_metadata, "provider": self.id, "model": model_id,
+                        "n": settings.num_images, "request_index": index + 1, "part_index": part_index,
+                        "run_index": run, "provider_mime_type": mime_type,
+                        "requested_size": f"{dimensions(settings)[0]}x{dimensions(settings)[1]}",
+                        "aspect_ratio": self._aspect_ratio_from_settings(settings),
+                        "resolution_tier": self._image_size_from_settings(settings, model_id),
+                        "usage": response.get("usageMetadata") or {},
+                        "references": [{key: value for key, value in ref.items() if key != "data"} for ref in references],
+                    }))
+                # A successful paid response is saved even if cancel arrived in-flight.
+        except ProviderGenerationError as exc:
+            exc.partial_images = paths
+            raise
+        except OSError as exc:
+            raise ProviderGenerationError("Could not save a Gemini result.", status="write_failed", partial_images=paths) from exc
         return paths
 
-    def _build_request_body(
-        self,
-        prompt: str,
-        settings: GlobalSettings,
-        model_id: str,
-        attachments: List[Any] = [],
-    ) -> Dict[str, Any]:
-        attachments = attachments or []
-        parts: List[Dict[str, Any]] = []
+    def _build_request_body(self, prompt: str, settings: GlobalSettings, model_id: str,
+                            attachments: list[Any] | None = None,
+                            *, references: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        if not prompt.strip():
+            raise ProviderGenerationError("Enter a prompt before generating.", status="invalid_settings")
+        references = read_attachments(attachments or []) if references is None else references
+        parts: list[dict[str, Any]] = [{"inlineData": {"mimeType": ref["mime_type"], "data": ref["data"]}} for ref in references]
         parts.append({"text": prompt})
-
-        for att in attachments:
-            try:
-                with open(att.file_path, "rb") as f:
-                    file_data = f.read()
-                b64_data = base64.b64encode(file_data).decode("utf-8")
-                mime = att.mime_type or mimetypes.guess_type(att.file_path)[0] or "image/png"
-                parts.append({"inlineData": {"mimeType": mime, "data": b64_data}})
-            except Exception as exc:
-                print(f"Error loading attachment {getattr(att, 'file_path', '')}: {exc}")
-
         if settings.negative_prompt:
-            parts.append({"text": f"Negative prompt: {settings.negative_prompt}"})
-
-        body: Dict[str, Any] = {"contents": [{"role": "user", "parts": parts}]}
-
-        generation_config: Dict[str, Any] = {}
-        image_config: Dict[str, Any] = {}
-        thinking_config: Dict[str, Any] = {}
-
-        aspect_ratio = self._aspect_ratio_from_settings(settings)
-        if aspect_ratio:
-            image_config["aspectRatio"] = aspect_ratio
-
-        is_nano = "flash" in model_id
-        is_pro = "pro" in model_id
-        is_image_preview = "image-preview" in model_id
-        thinking_supported = False
-
-        if is_pro:
-            generation_config["responseModalities"] = ["TEXT", "IMAGE"]
-            image_size = self._image_size_from_settings(settings)
-            if image_size:
-                image_config["imageSize"] = image_size
-            thinking_supported = not is_image_preview
-            if thinking_supported and settings.thinking_level:
-                thinking_config["thinkingLevel"] = settings.thinking_level
-        elif is_nano:
-            budget = settings.thinking_budget if settings.thinking_budget is not None else 0
-            if budget != 0:
-                thinking_config["thinkingBudget"] = budget
-
-        if image_config:
-            generation_config["imageConfig"] = image_config
-        if thinking_config:
-            generation_config["thinkingConfig"] = thinking_config
-        if generation_config:
-            body["generationConfig"] = generation_config
-
-        if self._search_grounding_enabled() and is_pro:
-            body["tools"] = [{"google_search": {}}]
-
+            parts.append({"text": f"Avoid these elements: {settings.negative_prompt}"})
+        config: dict[str, Any] = {
+            "responseModalities": ["TEXT", "IMAGE"],
+            "imageConfig": {"aspectRatio": self._aspect_ratio_from_settings(settings),
+                            "imageSize": self._image_size_from_settings(settings, model_id)},
+        }
+        if model_id == NANO_MODEL_ID and settings.thinking_level:
+            config["thinkingConfig"] = {"thinkingLevel": settings.thinking_level.upper()}
+        body: dict[str, Any] = {"contents": [{"role": "user", "parts": parts}], "generationConfig": config}
+        # Search grounding requires a complete source-attribution UI. It is not
+        # silently enabled through an environment flag in the raster-only client.
         return body
 
-    def _log_response_error(self, response: Any) -> None:
-        try:
-            payload = response.json()
-        except Exception:
-            payload = response.text
-        try:
-            print("[Gemini] Error", response.status_code, payload)
-        except Exception:
-            pass
+    @staticmethod
+    def _filter_reason(response: dict[str, Any]) -> str:
+        reason = response.get("promptFeedback", {}).get("blockReason")
+        if reason:
+            return str(reason)
+        for candidate in response.get("candidates") or []:
+            reason = candidate.get("finishReason", "")
+            if reason in {"SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "RECITATION"}:
+                return reason
+        return ""
 
-    def _log_request(self, model_id: str, body: Dict[str, Any], attachments: List[Any]) -> None:
-        try:
-            parts = body.get("contents", [{}])[0].get("parts", [])
-            generation = body.get("generationConfig", {})
-            print(
-                "[Gemini] Request",
-                f"model={model_id}",
-                f"parts={len(parts)}",
-                f"attachments={len(attachments)}",
-                f"imageConfig={generation.get('imageConfig')}",
-                f"thinkingConfig={generation.get('thinkingConfig')}",
-            )
-        except Exception:
-            # Logging should never break generation.
-            pass
-
-    def _extract_inline_images(self, response: Dict[str, Any]) -> List[Tuple[str, str]]:
-        candidates = response.get("candidates") or []
-        if not candidates:
-            return []
-        parts = candidates[0].get("content", {}).get("parts", [])
-        images: List[Tuple[str, str]] = []
-        for part in parts:
-            inline = part.get("inlineData")
-            if inline and inline.get("data"):
-                images.append((inline["data"], inline.get("mimeType", "image/png")))
+    @staticmethod
+    def _extract_inline_images(response: dict[str, Any]) -> list[tuple[str, str]]:
+        images = []
+        for candidate in response.get("candidates") or []:
+            for part in candidate.get("content", {}).get("parts", []):
+                if part.get("thought"):
+                    continue
+                inline = part.get("inlineData") or part.get("inline_data")
+                if inline and inline.get("data"):
+                    images.append((inline["data"], inline.get("mimeType") or inline.get("mime_type") or "image/png"))
         return images
 
-    def _endpoint_for_model(self, model_id: str) -> str:
-        return f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent"
+    @staticmethod
+    def _endpoint_for_model(model_id: str) -> str:
+        return f"https://generativelanguage.googleapis.com/v1/models/{model_id}:generateContent"
 
-    def _aspect_ratio_from_settings(self, settings: GlobalSettings) -> str | None:
-        width, height = self._resolve_dimensions(settings)
-        if not width or not height:
-            return None
+    @staticmethod
+    def _aspect_ratio_from_settings(settings: GlobalSettings) -> str:
+        width, height = dimensions(settings)
         divisor = gcd(width, height)
-        if divisor == 0:
-            return None
-        return f"{width // divisor}:{height // divisor}"
+        ratio = f"{width // divisor}:{height // divisor}"
+        return "21:9" if ratio == "7:3" else ratio
 
-    def _image_size_from_settings(self, settings: GlobalSettings) -> str:
-        width, height = self._resolve_dimensions(settings)
-        longest = max(width, height)
-        if longest >= 3500:
-            return "4K"
-        if longest >= 2000:
-            return "2K"
-        return "1K"
+    @staticmethod
+    def _image_size_from_settings(settings: GlobalSettings, model_id: str = NANO_MODEL_ID) -> str:
+        longest = max(dimensions(settings))
+        if longest <= 512 and model_id == NANO_MODEL_ID:
+            return "512"
+        return "4K" if longest >= 3500 else "2K" if longest >= 2000 else "1K"
 
-    def _resolve_dimensions(self, settings: GlobalSettings) -> Tuple[int, int]:
-        if settings.custom_size:
-            width = int(settings.custom_size.get("width", 0) or 0)
-            height = int(settings.custom_size.get("height", 0) or 0)
-            if width > 0 and height > 0:
-                return width, height
-
-        preset = DEFAULT_SIZE_PRESETS.get(settings.size_preset or "", DEFAULT_SIZE_PRESETS["Square 1024"])
-        return int(preset.get("width", 1024)), int(preset.get("height", 1024))
-
-    def _extension_from_mime(self, mime_type: str | None) -> str:
-        if not mime_type:
-            return "png"
-        if "jpeg" in mime_type or "jpg" in mime_type:
-            return "jpg"
-        if "webp" in mime_type:
-            return "webp"
-        return "png"
-
-    def _search_grounding_enabled(self) -> bool:
-        flag = os.environ.get("GEMINI_ENABLE_SEARCH", "")
-        return flag.lower() in {"1", "true", "yes", "on"}
+    _resolve_dimensions = staticmethod(dimensions)

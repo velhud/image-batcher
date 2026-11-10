@@ -1,210 +1,112 @@
-import { BackendState } from '@/api/types';
+import { BackendState, GlobalSettingsDTO } from '@/api/types';
 import { api } from '@/api/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/common/Button';
+import { modelForSettings, qualityLabel, qualityValue, resetRowSettings } from '@/lib/capabilities';
+import { runAction } from '@/lib/feedback';
+import { fieldClass, NumberField, TextSetting } from './SettingFields';
 
 export function GenerationSettingsPanel({ state }: { state: BackendState }) {
   const queryClient = useQueryClient();
   const gs = state.session.global_settings;
+  const model = modelForSettings(state.providers, gs);
+  const caps = model?.capabilities;
+  const sizes = caps?.size_presets || {};
+  const selectedRows = state.session.rows.filter(row => row.selected);
 
-  const update = async (patch: Record<string, unknown>) => {
+  const update = async (patch: Partial<GlobalSettingsDTO>) => {
     await api.updateGlobalSettings(patch);
-    queryClient.invalidateQueries({ queryKey: ['state'] });
+    await queryClient.invalidateQueries({ queryKey: ['state'] });
   };
-
   const applyToSelected = async () => {
-    const selectedIds = state.session.rows.filter((r) => r.selected).map((r) => r.id);
-    const resetPatch = {
-      provider_id: null,
-      model_id: null,
-      size_preset: null,
-      custom_size: null,
-      num_images: null,
-      style_preset: null,
-      negative_prompt: null,
-      seed: null,
-      random_seed: null,
-      quality: null,
-      safety: null,
-      keep_images: null,
-      generate_behavior: null,
-      regen_use_same_seed: null,
-    };
-    await Promise.all(selectedIds.map((id) => api.updateRow(id, { settings: resetPatch })));
-    queryClient.invalidateQueries({ queryKey: ['state'] });
+    for (const row of selectedRows) await api.updateRow(row.id, { settings: resetRowSettings });
+    await queryClient.invalidateQueries({ queryKey: ['state'] });
   };
+  const dimension = (key: 'width' | 'height', value: number | null) => update({
+    size_preset: 'Custom', custom_size: { width: gs.custom_size?.width || 1024, height: gs.custom_size?.height || 1024, [key]: value || 1024 },
+  });
 
   return (
-    <div className="space-y-5 text-sm pb-10">
+    <div className="space-y-5 text-sm pb-6">
+      {!model && <p role="alert" className="text-amber-200 text-xs">The saved model is unavailable. Choose a model in the header before generating.</p>}
       <div className="space-y-2">
-        <label className="text-text-muted text-xs uppercase font-semibold">Image Dimensions</label>
-        <select 
-            value={gs.size_preset}
-            onChange={(e) => update({ size_preset: e.target.value })}
-            className="w-full bg-black/20 border border-white/10 rounded p-2 text-xs focus:border-primary outline-none"
-        >
-            <option value="Square 1024">Square 1024 (1024x1024)</option>
-            <option value="Portrait">Portrait (1024x1536)</option>
-            <option value="Landscape">Landscape (1536x1024)</option>
-            <option value="Custom">Custom</option>
+        <label htmlFor="global-size" className="text-text-muted text-xs uppercase font-semibold">Image dimensions</label>
+        <select id="global-size" value={gs.custom_size ? 'Custom' : gs.size_preset} disabled={!caps}
+          onChange={e => runAction(() => update({ size_preset: e.target.value, custom_size: e.target.value === 'Custom' ? { width: 1024, height: 1024 } : null }))} className={fieldClass}>
+          {!sizes[gs.size_preset] && !gs.custom_size && <option value={gs.size_preset}>{gs.size_preset} (unavailable)</option>}
+          {Object.entries(sizes).map(([name, size]) => <option key={name} value={name}>{name} ({size.width}×{size.height})</option>)}
+          {caps?.supports_custom_size && <option value="Custom">Custom</option>}
         </select>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-2">
-            <label className="text-text-muted text-xs uppercase font-semibold">Batch Size</label>
-            <input 
-                type="number" min="1" max="8"
-                value={gs.num_images}
-                onChange={(e) => update({ num_images: parseInt(e.target.value, 10) })}
-                className="w-full bg-black/20 border border-white/10 rounded p-2 text-xs"
-            />
-        </div>
-        <div className="space-y-2">
-            <label className="text-text-muted text-xs uppercase font-semibold">Style Preset</label>
-            <select 
-                value={gs.style_preset}
-                onChange={(e) => update({ style_preset: e.target.value })}
-                className="w-full bg-black/20 border border-white/10 rounded p-2 text-xs"
-            >
-                <option value="None">None</option>
-                <option value="Photorealistic">Photorealistic</option>
-                <option value="Illustration">Illustration</option>
-                <option value="3D Render">3D Render</option>
-            </select>
-        </div>
+        {gs.custom_size && <div className="grid grid-cols-2 gap-2">
+          <NumberField label="Width" value={gs.custom_size.width} min={1} onCommit={value => dimension('width', value)} />
+          <NumberField label="Height" value={gs.custom_size.height} min={1} onCommit={value => dimension('height', value)} />
+        </div>}
+        {gs.custom_size && <p className="text-[11px] text-text-muted">Preflight checks dimensions against the selected model.</p>}
       </div>
 
       <div className="space-y-2">
-        <label className="text-text-muted text-xs uppercase font-semibold">Negative Prompt</label>
-        <textarea 
-            value={gs.negative_prompt || ""}
-            onChange={(e) => update({ negative_prompt: e.target.value })}
-            className="w-full h-20 bg-black/20 border border-white/10 rounded p-2 text-xs resize-none placeholder:text-white/10"
-            placeholder="Low quality, blurry, distorted..."
-        />
+        <label className="text-text-muted text-xs uppercase font-semibold">Images per prompt</label>
+        <NumberField label="Images per prompt" value={gs.num_images} min={1} max={caps?.max_images || 1} disabled={!caps}
+          onCommit={value => update({ num_images: value || 1 })} />
       </div>
 
-      <div className="space-y-2 pt-2 border-t border-white/5">
-        <div className="flex items-center justify-between">
-            <label className="text-text-muted text-xs uppercase font-semibold">Seed</label>
-            <label className="flex items-center gap-2 cursor-pointer">
-                <input 
-                    type="checkbox" 
-                    checked={gs.random_seed}
-                    onChange={(e) => update({ random_seed: e.target.checked })}
-                    className="accent-primary"
-                />
-                <span className="text-xs text-text-muted">Randomize</span>
-            </label>
-        </div>
-        {!gs.random_seed && (
-            <input 
-                type="number" 
-                value={gs.seed || 0}
-                onChange={(e) => update({ seed: parseInt(e.target.value, 10) })}
-                className="w-full bg-black/20 border border-white/10 rounded p-2 text-xs"
-            />
-        )}
-      </div>
-
-      <div className="space-y-4 pt-2 border-t border-white/5">
-        <div className="space-y-1">
-            <div className="flex justify-between text-xs text-text-muted">
-                <span>Quality</span>
-                <span>{gs.quality}</span>
-            </div>
-            <input 
-                type="range" min="1" max="10" 
-                value={gs.quality}
-                onChange={(e) => update({ quality: parseInt(e.target.value, 10) })}
-                className="w-full accent-primary h-1 bg-white/10 rounded-lg appearance-none cursor-pointer"
-            />
-        </div>
-        <div className="space-y-1">
-            <div className="flex justify-between text-xs text-text-muted">
-                <span>Safety Filter</span>
-                <span>{gs.safety}</span>
-            </div>
-            <input 
-                type="range" min="0" max="3" 
-                value={gs.safety}
-                onChange={(e) => update({ safety: parseInt(e.target.value, 10) })}
-                className="w-full accent-primary h-1 bg-white/10 rounded-lg appearance-none cursor-pointer"
-            />
-        </div>
-      </div>
-
-      <div className="space-y-2 pt-2 border-t border-white/5">
-        <label className="text-text-muted text-xs uppercase font-semibold">Reasoning (Thinking)</label>
-        <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1">
-                <label className="text-xs text-text-muted">Pro: Level</label>
-                <select 
-                    value={gs.thinking_level || "high"}
-                    onChange={(e) => update({ thinking_level: e.target.value })}
-                    className="w-full bg-black/20 border border-white/10 rounded p-2 text-xs"
-                >
-                    <option value="low">Low (Faster)</option>
-                    <option value="high">High (Better)</option>
-                </select>
-            </div>
-
-            <div className="space-y-1">
-                <label className="text-xs text-text-muted">Nano: Budget</label>
-                <div className="flex gap-2">
-                    <input 
-                        type="number" 
-                        value={gs.thinking_budget}
-                        onChange={(e) => update({ thinking_budget: parseInt(e.target.value, 10) })}
-                        className="w-full bg-black/20 border border-white/10 rounded p-2 text-xs"
-                        placeholder="0 to disable"
-                    />
-                </div>
-                <p className="text-[10px] text-text-muted">-1 = Dynamic, 0 = Off</p>
-            </div>
-        </div>
-      </div>
-
-      <div className="space-y-2 pt-2 border-t border-white/5">
-        <label className="text-text-muted text-xs uppercase font-semibold">Generation Behavior</label>
-        <select 
-            value={gs.generate_behavior}
-            onChange={(e) => update({ generate_behavior: e.target.value })}
-            className="w-full bg-black/20 border border-white/10 rounded p-2 text-xs"
-        >
-            <option value="keep">Keep Existing Images</option>
-            <option value="replace">Replace Existing Images</option>
+      {caps?.supports_style && <div className="space-y-2">
+        <label htmlFor="global-style" className="text-text-muted text-xs uppercase font-semibold">Style</label>
+        <select id="global-style" value={gs.style_preset} onChange={e => runAction(() => update({ style_preset: e.target.value }))} className={fieldClass}>
+          {['None', 'Photorealistic', 'Illustration', '3D Render'].map(style => <option key={style}>{style}</option>)}
         </select>
-        
-        <label className="flex items-center gap-2 cursor-pointer mt-2">
-            <input 
-                type="checkbox" 
-                checked={gs.regen_use_same_seed}
-                onChange={(e) => update({ regen_use_same_seed: e.target.checked })}
-                className="accent-primary"
-            />
-            <span className="text-xs text-text-muted">Regenerate using same seed</span>
-        </label>
-        
-        <label className="flex items-center gap-2 cursor-pointer">
-            <input 
-                type="checkbox" 
-                checked={gs.prompt_highlighting}
-                onChange={(e) => update({ prompt_highlighting: e.target.checked })}
-                className="accent-primary"
-            />
-            <span className="text-xs text-text-muted">Syntax Highlighting</span>
-        </label>
-      </div>
+      </div>}
 
-      <div className="pt-4">
-        <Button onClick={applyToSelected} className="w-full" variant="secondary" size="sm">
-            Apply Defaults to Selected Rows
+      {caps?.supports_negative_prompt && <div className="space-y-2">
+        <label className="text-text-muted text-xs uppercase font-semibold">{gs.provider_id === 'google' ? 'Avoid (added to prompt)' : 'Negative prompt'}</label>
+        <TextSetting label="Negative prompt" value={gs.negative_prompt || ''} onCommit={value => update({ negative_prompt: value })} />
+      </div>}
+
+      {caps?.supports_seed && <div className="space-y-2 border-t border-white/5 pt-3">
+        <label className="flex items-center gap-2 text-xs text-text-muted"><input type="checkbox" checked={gs.random_seed}
+          onChange={e => runAction(() => update({ random_seed: e.target.checked }))} /> Random seed</label>
+        {!gs.random_seed && <NumberField label="Seed" value={gs.seed ?? 0} min={0} onCommit={value => update({ seed: value ?? 0 })} />}
+        <label className="flex items-center gap-2 text-xs text-text-muted"><input type="checkbox" checked={gs.regen_use_same_seed}
+          onChange={e => runAction(() => update({ regen_use_same_seed: e.target.checked }))} /> Reuse seed when regenerating</label>
+      </div>}
+
+      {caps?.supports_quality && <div className="space-y-2">
+        <label htmlFor="global-quality" className="text-text-muted text-xs uppercase font-semibold">Quality</label>
+        <select id="global-quality" className={fieldClass} value={qualityLabel(gs.quality)}
+          onChange={e => runAction(() => update({ quality: qualityValue(e.target.value) }))}>
+          {(caps.quality_options || ['low', 'medium', 'high']).filter(value => ['low', 'medium', 'high'].includes(value)).map(value => <option key={value}>{value}</option>)}
+        </select>
+      </div>}
+
+      {!!caps?.output_formats?.length && <div className="space-y-2">
+        <label htmlFor="global-format" className="text-text-muted text-xs uppercase font-semibold">Output format</label>
+        <select id="global-format" className={fieldClass} value={gs.output_format || 'png'}
+          onChange={e => runAction(() => update({ output_format: e.target.value, ...(e.target.value === 'jpeg' ? { background: 'opaque' } : {}) }))}>
+          {caps.output_formats.map(format => <option key={format} value={format}>{format.toUpperCase()}</option>)}
+        </select>
+      </div>}
+      {caps?.supports_background && <div className="space-y-2">
+        <label htmlFor="global-background" className="text-text-muted text-xs uppercase font-semibold">Background</label>
+        <select id="global-background" className={fieldClass} value={gs.background || 'auto'} onChange={e => runAction(() => update({ background: e.target.value }))}>
+          <option value="auto">Auto</option><option value="opaque">Opaque</option>
+          <option value="transparent" disabled={gs.output_format === 'jpeg'}>Transparent (PNG / WebP)</option>
+        </select>
+      </div>}
+
+      <div className="border-t border-white/5 pt-3 text-xs text-text-muted">
+        {caps?.supports_attachments ? `Reference images: up to ${caps.max_attachments} per row. Add them with the paperclip.` : 'This model does not accept reference images.'}
+      </div>
+      <div className="space-y-2">
+        <label htmlFor="generation-behavior" className="text-text-muted text-xs uppercase font-semibold">When regenerating</label>
+        <select id="generation-behavior" value={gs.generate_behavior} onChange={e => runAction(() => update({ generate_behavior: e.target.value }))} className={fieldClass}>
+          <option value="keep">Keep previous images</option><option value="replace">Replace after a successful run</option>
+        </select>
+      </div>
+      <div className="pt-3">
+        <Button onClick={() => runAction(applyToSelected)} className="w-full" variant="secondary" size="sm" disabled={!selectedRows.length || selectedRows.some(row => row.status === 'Queued' || row.status === 'Generating')}>
+          Apply Defaults to Selected Rows
         </Button>
-        <p className="text-[10px] text-text-muted mt-2 text-center">
-            Resets specific row settings to use these globals.
-        </p>
+        <p className="text-[10px] text-text-muted mt-2 text-center">Clears all overrides, including format and background.</p>
       </div>
     </div>
   );

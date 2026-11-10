@@ -4,10 +4,11 @@ import electron from 'vite-plugin-electron';
 import renderer from 'vite-plugin-electron-renderer';
 import path from 'path';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  base: './',
   plugins: [
     react(),
-    electron([
+    ...(mode === 'web' ? [] : [electron([
       {
         // Entry point of the Electron App
         entry: 'electron/main.ts',
@@ -21,7 +22,7 @@ export default defineConfig({
         },
       },
     ]),
-    renderer(),
+    renderer()]),
   ],
   resolve: {
     alias: {
@@ -38,4 +39,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

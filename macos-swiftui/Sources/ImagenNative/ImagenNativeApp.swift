@@ -1,16 +1,10 @@
 import SwiftUI
 
 @main
+@MainActor
 struct ImagenNativeApp: App {
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .onAppear {
-                    BackendLauncher.shared.ensureRunning()
-                }
-        }
-        .commands {
-            CommandGroup(replacing: .newItem) { }
-        }
+        WindowGroup { ContentView() }
+            .commands { CommandGroup(replacing: .newItem) { } }
     }
 }

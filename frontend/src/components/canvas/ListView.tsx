@@ -1,4 +1,4 @@
-import { GlobalSettingsDTO, RowDTO } from '@/api/types';
+import { GlobalSettingsDTO, ProviderInfo, RowDTO } from '@/api/types';
 import { RowCard } from '@/components/row/RowCard';
 import { Button } from '@/components/common/Button';
 import { Plus } from 'lucide-react';
@@ -8,9 +8,10 @@ import { useQueryClient } from '@tanstack/react-query';
 interface ListViewProps {
   rows: RowDTO[];
   globalSettings: GlobalSettingsDTO;
+  providers: ProviderInfo[];
 }
 
-export function ListView({ rows, globalSettings }: ListViewProps) {
+export function ListView({ rows, globalSettings, providers }: ListViewProps) {
   const queryClient = useQueryClient();
 
   const handleAddRow = async () => {
@@ -22,7 +23,7 @@ export function ListView({ rows, globalSettings }: ListViewProps) {
     <div className="max-w-5xl mx-auto pb-24">
       <div className="flex flex-col gap-4">
         {rows.map((row, idx) => (
-          <RowCard key={row.id} row={row} index={idx + 1} globalSettings={globalSettings} />
+          <RowCard key={row.id} row={row} index={idx + 1} globalSettings={globalSettings} providers={providers} />
         ))}
       </div>
 

@@ -15,3 +15,8 @@ macos-swiftui/.build/
 *.log
 exports/
 output/
+*.egg-info/
+wheelhouse/
+.venv/
+demo-output/
+frontend/test-results/

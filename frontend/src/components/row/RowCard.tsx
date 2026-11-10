@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { GlobalSettingsDTO, RowDTO } from '@/api/types';
+import { GlobalSettingsDTO, ProviderInfo, RowDTO } from '@/api/types';
 import { api, imageUrl } from '@/api/client';
 import { Badge } from '@/components/common/Badge';
 import { Button } from '@/components/common/Button';
@@ -7,6 +7,8 @@ import { Play, Trash2, Copy, Image as ImageIcon, Settings2, FolderOpen, StopCirc
 import { useQueryClient } from '@tanstack/react-query';
 import { RowSettingsOverride } from './RowSettingsOverride';
 import { ImageLightbox } from '@/components/dialogs/ImageLightbox';
+import { effectiveRowSettings, modelForSettings, qualityLabel } from '@/lib/capabilities';
+import { runAction } from '@/lib/feedback';
 
 const generateId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -19,9 +21,10 @@ interface RowCardProps {
   row: RowDTO;
   index: number;
   globalSettings: GlobalSettingsDTO;
+  providers: ProviderInfo[];
 }
 
-export function RowCard({ row, index, globalSettings }: RowCardProps) {
+export function RowCard({ row, index, globalSettings, providers }: RowCardProps) {
   const [prompt, setPrompt] = useState(row.prompt || "");
   const [tags, setTags] = useState((row.tags || []).join(", "));
   const [showSettings, setShowSettings] = useState(false);
@@ -29,6 +32,9 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
   const promptRef = useRef<HTMLTextAreaElement>(null);
   
   const queryClient = useQueryClient();
+  const busy = row.status === 'Generating' || row.status === 'Queued';
+  const effective = effectiveRowSettings(globalSettings, row.settings);
+  const caps = modelForSettings(providers, effective)?.capabilities;
 
   useEffect(() => {
     if (document.activeElement !== promptRef.current) {
@@ -37,15 +43,18 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
   }, [row.prompt]);
   useEffect(() => { setTags((row.tags || []).join(", ")); }, [row.tags]);
 
-  const handleBlurPrompt = () => { if (prompt !== row.prompt) api.updateRow(row.id, { prompt }); };
-  const handleBlurTags = () => { api.updateRow(row.id, { tags: tags.split(',').map(t => t.trim()).filter(Boolean) }); };
+  const handleBlurPrompt = () => { if (prompt !== row.prompt) runAction(() => api.updateRow(row.id, { prompt })); };
+  const handleBlurTags = () => { runAction(() => api.updateRow(row.id, { tags: tags.split(',').map(t => t.trim()).filter(Boolean) })); };
 
   const handleGenerate = async () => { 
     await api.updateRow(row.id, { prompt }); 
+    const report = await api.preflight([row.id]);
+    if (!report.valid) throw new Error(report.rows.flatMap(item => item.errors).join('\n'));
+    if (row.status === 'Interrupted' && !confirm('This request was interrupted and may have completed at the provider. Start a new request for this row?')) return;
     await api.generateRows([row.id]); 
     queryClient.invalidateQueries({ queryKey: ['state'] }); 
   };
-  const handleStop = async () => { await api.stopAll(); }; 
+  const handleStop = async () => { await api.cancelRow(row.id); await queryClient.invalidateQueries({ queryKey: ['state'] }); };
   const handleDelete = async () => { if (confirm("Delete?")) { await api.deleteRows([row.id]); queryClient.invalidateQueries({ queryKey: ['state'] }); }};
   const handleDuplicate = async () => { await api.duplicateRow(row.id); queryClient.invalidateQueries({ queryKey: ['state'] }); };
   const handleCopyImage = async () => {
@@ -93,7 +102,7 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
             <input 
                 type="checkbox" 
                 checked={row.selected}
-                onChange={(e) => { api.updateRow(row.id, { selected: e.target.checked }); queryClient.invalidateQueries({ queryKey: ['state'] }); }}
+                onChange={(e) => { const selected = e.target.checked; runAction(async () => { await api.updateRow(row.id, { selected }); await queryClient.invalidateQueries({ queryKey: ['state'] }); }); }}
                 className="rounded border-white/20 bg-black/20 text-primary cursor-pointer w-4 h-4"
             />
         </div>
@@ -110,13 +119,14 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
                       </span>
                     )}
                 </div>
-                {row.error_message && <span className="text-xs text-red-400 truncate max-w-xs">{row.error_message}</span>}
             </div>
+            {row.error_message && <p role="alert" className="text-xs text-amber-200 whitespace-pre-wrap break-words">{row.error_message}</p>}
             
             <div className="relative">
                 <textarea
                     ref={promptRef}
                     value={prompt}
+                    disabled={busy}
                     onChange={(e) => setPrompt(e.target.value)}
                     onBlur={handleBlurPrompt}
                     placeholder="Enter prompt..."
@@ -139,7 +149,7 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
 
             <div className="flex flex-wrap gap-2 text-[10px] text-text-muted">
                 <span>Provider: {row.settings.provider_id || globalSettings.provider_id}</span>
-                <span>Quality: {row.settings.quality ?? globalSettings.quality}</span>
+                {caps?.supports_quality && <span>Quality: {qualityLabel(effective.quality)}</span>}
                 <span>Size: {row.settings.size_preset || globalSettings.size_preset}</span>
                 {outputName && <span className="text-cyan-200">Output: {outputName}</span>}
             </div>
@@ -154,7 +164,8 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
                             {att.file_path.split(/[/\\]/).pop()}
                         </span>
                         <button
-                            onClick={() => removeAttachment(att.id)}
+                            onClick={() => runAction(() => removeAttachment(att.id))}
+                            disabled={busy}
                             className="text-white/30 hover:text-red-400 transition-colors"
                             title="Remove attachment"
                         >
@@ -167,12 +178,12 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
             {/* Toolbar - Complete feature set */}
             <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                 {row.status === 'Generating' || row.status === 'Queued' ? (
-                    <Button size="sm" variant="danger" onClick={handleStop}>
-                        <StopCircle size={14} className="mr-2" /> Stop
+                    <Button size="sm" variant="danger" onClick={() => runAction(handleStop)}>
+                        <StopCircle size={14} className="mr-2" /> Stop Row
                     </Button>
                 ) : (
-                    <Button size="sm" onClick={handleGenerate}>
-                        <Play size={14} className="mr-2" /> {row.images.length > 0 ? "Regenerate" : "Generate"}
+                    <Button size="sm" onClick={() => runAction(handleGenerate)}>
+                        <Play size={14} className="mr-2" /> {row.status === 'Interrupted' ? 'Review & Retry' : row.images.length > 0 ? "Regenerate" : "Generate"}
                     </Button>
                 )}
                 
@@ -181,13 +192,14 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
                 <Button size="sm" variant={showSettings ? "secondary" : "ghost"} onClick={() => setShowSettings(!showSettings)} title="Row Settings">
                     <Settings2 size={14} />
                 </Button>
-                <Button size="sm" variant="ghost" title="Attach Image" onClick={handleAddAttachment}>
+                <Button size="sm" variant="ghost" title={caps?.supports_attachments ? `Attach reference image (maximum ${caps.max_attachments})` : 'This model does not accept reference images'}
+                  disabled={busy || !caps?.supports_attachments || row.attachments.length >= caps.max_attachments} onClick={() => runAction(handleAddAttachment)}>
                     <Paperclip size={14} className={row.attachments?.length ? "text-primary" : ""} />
                 </Button>
-                <Button size="sm" variant="ghost" title="Duplicate Row" onClick={handleDuplicate}>
+                <Button size="sm" variant="ghost" title="Duplicate Row" onClick={() => runAction(handleDuplicate)}>
                     <Files size={14} />
                 </Button>
-                <Button size="sm" variant="ghost" title="Copy Prompt" onClick={() => navigator.clipboard.writeText(prompt)}>
+                <Button size="sm" variant="ghost" title="Copy Prompt" onClick={() => runAction(() => navigator.clipboard.writeText(prompt))}>
                     <Copy size={14} />
                 </Button>
                 
@@ -195,24 +207,24 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
                 
                 {displayImage && (
                     <>
-                        <Button size="sm" variant="ghost" title="Copy Image" onClick={handleCopyImage}>
+                        <Button size="sm" variant="ghost" title="Copy Image" onClick={() => runAction(handleCopyImage)}>
                             <Copy size={14} />
                         </Button>
-                        <Button size="sm" variant="ghost" title="Open Folder" onClick={() => api.openPath(displayImage.file_path)}>
+                        <Button size="sm" variant="ghost" title="Open image" onClick={() => runAction(() => api.openPath(displayImage.file_path))}>
                             <FolderOpen size={14} />
                         </Button>
                     </>
                 )}
-                <Button size="sm" variant="danger" title="Delete Row" onClick={handleDelete}>
+                <Button size="sm" variant="danger" title="Delete Row" disabled={busy} onClick={() => runAction(handleDelete)}>
                     <Trash2 size={14} />
                 </Button>
             </div>
 
             {showSettings && (
                 <div className="mt-2 p-3 bg-black/20 rounded border border-white/5">
-                    <RowSettingsOverride row={row} />
+                    <RowSettingsOverride row={row} providers={providers} globalSettings={globalSettings} />
                     <div className="mt-3 border-t border-white/5 pt-3 text-xs">
-                      <div className="mb-1 text-text-muted">Full Prompt Preview</div>
+                      <div className="mb-1 text-text-muted">Next Request Preview</div>
                       <div className="max-h-28 overflow-y-auto rounded bg-black/30 p-2 font-mono text-[11px] leading-relaxed text-text-main">
                         {fullPromptPreview}
                       </div>
@@ -229,7 +241,7 @@ export function RowCard({ row, index, globalSettings }: RowCardProps) {
             >
                 {displayImage ? (
                     <>
-                        <img src={imageUrl(displayImage.file_path)} className="w-full h-full object-cover" />
+                        <img src={imageUrl(displayImage.file_path)} alt={String(displayImage.metadata?.original_prompt || row.prompt)} className="w-full h-full object-contain" />
                         <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/img:opacity-100 flex items-center justify-center transition-opacity text-xs text-white">
                             Click to Expand
                         </div>

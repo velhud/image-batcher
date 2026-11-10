@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse, unquote
 from app.azure_logo_workflow import AZURE_LOGO_PROMPT_WRAPPER, apply_azure_logo_preset
 from app.batch_parser import parse_batch_input
 from app.generation_log import read_generation_log, verify_rows
-from app.models import InputAttachment, RowData, RowStatus, SessionData, ImageResult, RowSettings, session_storage_dir
+from app.models import InputAttachment, GlobalSettings, RowData, RowStatus, SessionData, RowSettings, session_storage_dir, validate_settings, validate_session, effective_settings
 from app.env import load_dotenv_if_available
 from app.providers.registry import ProviderRegistry
 from app.queue_manager import GenerationQueue
@@ -20,71 +20,68 @@ from app.session_manager import SessionManager
 from app.stats import compute_stats
 from app.exporter import ImageExporter
 from app.undo_manager import UndoManager
+from app.batch_service import preflight
+from app.generation_state import apply_generation_event
 
 class BackendState:
-    def __init__(self) -> None:
+    def __init__(self, *, restore: bool = True) -> None:
         load_dotenv_if_available()
+        self._lock = threading.RLock()
         self.registry = ProviderRegistry()
         self.session_manager = SessionManager()
-        self.session: SessionData = self.session_manager.session
+        if restore:
+            self.session_manager.restore_last()
+        self.session = self.session_manager.session
         self.undo_manager = UndoManager()
         self.undo_manager.push(self.session)
-        
-        self.queue = GenerationQueue(
-            self.registry,
-            output_root=self.session_manager.session_output_dir(),
-            concurrency=self.session.global_settings.concurrency_limit,
-            rpm=self.session.global_settings.rate_limit_rpm,
-        )
-        self.queue.register_listener(self._handle_event)
-        self._lock = threading.Lock()
+        self._queue_epoch = 0
+        self.queue = self._create_queue()
 
-    def _handle_event(self, event: str, row_id: str, payload: Dict) -> None:
+    def _create_queue(self) -> GenerationQueue:
+        self._queue_epoch += 1
+        epoch = self._queue_epoch
+        queue = GenerationQueue(self.registry, self.session_manager.session_output_dir(),
+                                self.session.global_settings.concurrency_limit,
+                                self.session.global_settings.rate_limit_rpm)
+        previous = getattr(self, "queue", None)
+        if previous is not None:
+            queue.rate_limiter = previous.rate_limiter
+            queue.rate_limiter.set_rpm(self.session.global_settings.rate_limit_rpm)
+        queue.register_listener(lambda event, row_id, payload: self._handle_event(event, row_id, payload, epoch))
+        return queue
+
+    def require_idle(self) -> None:
+        if not self.queue.is_idle():
+            raise ValueError("Wait for active work to finish, or stop the queue before changing sessions or concurrency")
+
+    def replace_session(self, session: SessionData, path: Path | None = None) -> None:
+        self.require_idle()
+        self.queue.shutdown()
+        self.session = self.session_manager.session = session
+        if path is not None:
+            self.session_manager.last_path = path
+        self.queue = self._create_queue()
+        self.undo_manager = UndoManager()
+        self.undo_manager.push(session)
+        self.session_manager.autosave()
+
+    def _handle_event(self, event: str, row_id: str, payload: Dict, epoch: int | None = None) -> None:
+        if event == "queue_position":
+            return
         with self._lock:
+            if epoch is not None and epoch != self._queue_epoch:
+                return
             row = self._row_by_id(row_id)
             if not row:
                 return
-            if event in {"queued", "queue_position"}:
-                row.status = RowStatus.QUEUED
-                row.error_message = payload.get("message", "")
-            elif event == "started":
-                row.status = RowStatus.GENERATING
-            elif event == "completed":
-                row.status = RowStatus.COMPLETED
-                row.error_message = ""
-                # Handle images
-                images = payload.get("images", [])
-                paths = payload.get("paths", [])
-                keep = payload.get("keep_existing", True)
-                if not keep:
-                    row.images = []
-                if images:
-                    for img in images:
-                        row.images.append(
-                            ImageResult(
-                                id=f"img-{len(row.images)+1}",
-                                row_id=row.id,
-                                file_path=img.get("path", ""),
-                                metadata=img.get("metadata", {}),
-                            )
-                        )
-                else:
-                    for p in paths:
-                        row.images.append(ImageResult(id=f"img-{len(row.images)+1}", row_id=row.id, file_path=p))
-            elif event == "error":
-                row.status = RowStatus.ERROR
-                row.error_message = payload.get("message", "")
-            elif event == "filtered":
-                row.status = RowStatus.FILTERED
-                row.error_message = payload.get("message", "")
-            elif event == "cancelled":
-                row.status = RowStatus.CANCELLED
-                row.error_message = payload.get("message", "")
-            elif event == "skipped":
-                row.error_message = payload.get("message", "")
-                if any(Path(img.file_path).exists() for img in row.images):
-                    row.status = RowStatus.COMPLETED
+            apply_generation_event(row, event, payload)
             self.session_manager.autosave()
+
+    def dispatch(self, action: str, data: Dict[str, Any]) -> Any:
+        if not isinstance(action, str) or not isinstance(data, dict):
+            raise ValueError("RPC requires a text action and an object data payload")
+        with self._lock:
+            return self._dispatch(action, data)
 
     def _row_by_id(self, row_id: str) -> RowData | None:
         for row in self.session.rows:
@@ -103,160 +100,57 @@ class BackendState:
                 "session": self.session.to_dict(),
                 "providers": [p.to_dict() for p in self.registry.info_list()],
                 "stats": compute_stats(self.session.rows).to_dict(),
+                "restore_warning": self.session_manager.restore_error,
             }
-
-STATE = BackendState()
-
-def _json_response(handler: BaseHTTPRequestHandler, body: Dict, status: int = 200) -> None:
-    data = json.dumps(body).encode("utf-8")
-    handler.send_response(status)
-    _set_cors_headers(handler)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
-
-def _set_cors_headers(handler: BaseHTTPRequestHandler) -> None:
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
-    handler.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-
-class Handler(BaseHTTPRequestHandler):
-    def do_OPTIONS(self) -> None:
-        self.send_response(200)
-        _set_cors_headers(self)
-        self.end_headers()
-
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        if parsed.path != "/images":
-            self.send_error(404)
-            return
-
-        query = parse_qs(parsed.query or "")
-        raw_path = query.get("path", [None])[0]
-        if not raw_path:
-            self.send_error(400, "missing path")
-            return
-
-        file_path = Path(unquote(raw_path))
-        images_root = session_storage_dir().resolve()
-        try:
-            file_path.resolve().relative_to(images_root)
-        except Exception:
-            self.send_error(403)
-            return
-
-        if not file_path.exists() or not file_path.is_file():
-            self.send_error(404)
-            return
-
-        data = file_path.read_bytes()
-        mime, _ = mimetypes.guess_type(file_path.name)
-        self.send_response(200)
-        _set_cors_headers(self)
-        self.send_header("Content-Type", mime or "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        try:
-            self.wfile.write(data)
-        except BrokenPipeError:
-            # Client disconnected
-            pass
-
-    def do_POST(self) -> None:
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length)
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except Exception:
-            _json_response(self, {"error": "invalid json"}, 400)
-            return
-        action = payload.get("action")
-        data = payload.get("data", {})
-
-        # Request logging for key actions
-        print(f"[-] ACTION: {action}")
-        if action == "update_row":
-            try:
-                print(f"    Data: {json.dumps(data)}")
-            except Exception:
-                pass
-        elif action == "generate_rows":
-            print(f"    Rows: {data.get('row_ids')}")
-        
-        try:
-            result = self._dispatch(action, data)
-            _json_response(self, {"ok": True, "data": result})
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            print(f"[!] ERROR in {action}: {exc}")
-            _json_response(self, {"ok": False, "error": str(exc)}, 500)
 
     def _dispatch(self, action: str, data: Dict[str, Any]) -> Any:
         if action == "state":
-            return STATE.to_dict()
+            return self.to_dict()
             
         # --- Session Management ---
         if action == "new_session":
-            STATE.push_state()
-            STATE.session = STATE.session_manager.new_session()
-            STATE.queue.shutdown()
-            STATE.queue = GenerationQueue(
-                STATE.registry,
-                output_root=STATE.session_manager.session_output_dir(),
-                concurrency=STATE.session.global_settings.concurrency_limit,
-                rpm=STATE.session.global_settings.rate_limit_rpm,
-            )
-            STATE.queue.register_listener(STATE._handle_event)
-            STATE.push_state()
-            return STATE.to_dict()
-            
+            import uuid
+            self.replace_session(SessionData(id=str(uuid.uuid4()), global_settings=GlobalSettings(), rows=[]))
+            return self.to_dict()
+
         if action == "save_session":
             path = data.get("path")
             if path:
-                STATE.session_manager.save(Path(path))
+                self.session_manager.save(Path(path))
             else:
-                STATE.session_manager.autosave()
+                self.session_manager.autosave()
             return {"saved": True}
 
         if action == "load_session":
-            path = data.get("path")
-            if path and Path(path).exists():
-                STATE.push_state()
-                STATE.session = STATE.session_manager.load(Path(path))
-                STATE.undo_manager.push(STATE.session)
-                STATE.queue.shutdown()
-                STATE.queue = GenerationQueue(
-                    STATE.registry,
-                    output_root=STATE.session_manager.session_output_dir(),
-                    concurrency=STATE.session.global_settings.concurrency_limit,
-                    rpm=STATE.session.global_settings.rate_limit_rpm,
-                )
-                STATE.queue.register_listener(STATE._handle_event)
-            return STATE.to_dict()
+            path = Path(data["path"])
+            self.require_idle()
+            candidate = SessionManager.read(path)
+            self.replace_session(candidate, path)
+            return self.to_dict()
 
-        if action == "undo":
-            prev = STATE.undo_manager.undo()
-            if prev:
-                STATE.session = prev
-                STATE.session_manager.session = prev
-            return STATE.to_dict()
-
-        if action == "redo":
-            next_s = STATE.undo_manager.redo()
-            if next_s:
-                STATE.session = next_s
-                STATE.session_manager.session = next_s
-            return STATE.to_dict()
+        if action in {"undo", "redo"}:
+            self.require_idle()
+            restored = self.undo_manager.undo(self.session) if action == "undo" else self.undo_manager.redo(self.session)
+            if restored:
+                self.queue.shutdown()
+                self.session = self.session_manager.session = restored
+                for row in restored.rows:
+                    if row.status in {RowStatus.QUEUED, RowStatus.GENERATING}:
+                        row.status = RowStatus.INTERRUPTED
+                self.queue = self._create_queue()
+                self.session_manager.autosave()
+            return self.to_dict()
 
         # --- Row Operations ---
         if action == "add_rows":
             import uuid
-            STATE.push_state()
             prompts: List[str] = data.get("prompts", [])
             rows_data: List[Dict[str, Any]] = data.get("rows", [])
+            if not isinstance(prompts, list) or any(not isinstance(prompt, str) for prompt in prompts):
+                raise ValueError("prompts must be an array of strings")
+            if not isinstance(rows_data, list) or any(not isinstance(item, dict) or not isinstance(item.get("prompt", ""), str) for item in rows_data):
+                raise ValueError("rows must be an array of objects with text prompts")
+            self.push_state()
             if rows_data:
                 for item in rows_data:
                     row = RowData(
@@ -266,13 +160,13 @@ class Handler(BaseHTTPRequestHandler):
                         category_id=str(item.get("category_id", "")),
                         source_metadata=item.get("source_metadata", {}),
                     )
-                    STATE.session.rows.append(row)
+                    self.session.rows.append(row)
             else:
                 for prompt in prompts:
                     row = RowData(id=str(uuid.uuid4()), prompt=prompt)
-                    STATE.session.rows.append(row)
-            STATE.push_state()
-            return {"rows": [r.to_dict() for r in STATE.session.rows]}
+                    self.session.rows.append(row)
+            self.push_state()
+            return {"rows": [r.to_dict() for r in self.session.rows]}
 
         if action == "parse_batch":
             result = parse_batch_input(
@@ -297,15 +191,18 @@ class Handler(BaseHTTPRequestHandler):
                 csv_column=data.get("csv_column", "prompt"),
                 prompt_append=data.get("prompt_append", ""),
             )
-            if result.errors and not result.rows:
-                return {"rows": [r.to_dict() for r in STATE.session.rows], "errors": result.errors}
-            STATE.push_state()
+            if result.errors:
+                return {"rows": [r.to_dict() for r in self.session.rows], "errors": result.errors}
+            self.push_state()
             apply_mode = data.get("apply_mode", "append")
+            if apply_mode not in {"append", "replace", "fill"}:
+                raise ValueError("apply_mode must be append, replace, or fill")
             if apply_mode == "replace":
-                STATE.session.rows.clear()
+                self.require_idle()
+                self.session.rows.clear()
             pending_rows = list(result.rows)
             if apply_mode == "fill":
-                empty_rows = [r for r in STATE.session.rows if not r.prompt]
+                empty_rows = [r for r in self.session.rows if not r.prompt]
                 for row, parsed in zip(empty_rows, pending_rows):
                     row.prompt = parsed.prompt
                     row.prompt_id = parsed.prompt_id
@@ -313,7 +210,7 @@ class Handler(BaseHTTPRequestHandler):
                     row.source_metadata = parsed.source_metadata
                 pending_rows = pending_rows[len(empty_rows):]
             for parsed in pending_rows:
-                STATE.session.rows.append(
+                self.session.rows.append(
                     RowData(
                         id=str(uuid.uuid4()),
                         prompt=parsed.prompt,
@@ -322,16 +219,18 @@ class Handler(BaseHTTPRequestHandler):
                         source_metadata=parsed.source_metadata,
                     )
                 )
-            STATE.push_state()
-            return {"rows": [r.to_dict() for r in STATE.session.rows], "errors": result.errors}
+            self.push_state()
+            return {"rows": [r.to_dict() for r in self.session.rows], "errors": result.errors}
 
         if action == "update_row":
             # Don't push undo for every keystroke, handle debounce in frontend or specific commit action
             # For simplicity, we push state if 'final' flag is sent or specific fields change
             rid = data["row_id"]
-            row = STATE._row_by_id(rid)
+            row = self._row_by_id(rid)
             if not row:
-                return {}
+                raise ValueError("Row not found")
+            candidate = RowData.from_dict(row.to_dict())
+            row = candidate
             
             if "prompt" in data:
                 row.prompt = data["prompt"]
@@ -358,118 +257,92 @@ class Handler(BaseHTTPRequestHandler):
                 # Model handles None as "inherit global".
                 row.settings = RowSettings(**current)
 
-            STATE.session_manager.autosave()
+            candidate_session = SessionData(id=self.session.id, global_settings=self.session.global_settings, rows=[row])
+            validate_session(candidate_session)
+            original = self._row_by_id(rid)
+            self.session.rows[self.session.rows.index(original)] = row
+            self.session_manager.autosave()
             return row.to_dict()
 
         if action == "delete_rows":
-            STATE.push_state()
+            self.require_idle()
+            self.push_state()
             ids = set(data.get("row_ids", []))
-            STATE.session.rows = [r for r in STATE.session.rows if r.id not in ids]
-            STATE.push_state()
-            return {"rows": [r.to_dict() for r in STATE.session.rows]}
+            self.session.rows = [r for r in self.session.rows if r.id not in ids]
+            self.push_state()
+            return {"rows": [r.to_dict() for r in self.session.rows]}
 
         if action == "duplicate_row":
-            STATE.push_state()
+            self.push_state()
             rid = data.get("row_id")
-            row = STATE._row_by_id(rid)
+            row = self._row_by_id(rid)
             if row:
                 import uuid
                 clone = RowData.from_dict(row.to_dict())
                 clone.id = str(uuid.uuid4())
                 clone.images = [] # Don't clone images
                 clone.status = RowStatus.IDLE
-                idx = STATE.session.rows.index(row) + 1
-                STATE.session.rows.insert(idx, clone)
-            STATE.push_state()
-            return STATE.to_dict()
+                idx = self.session.rows.index(row) + 1
+                self.session.rows.insert(idx, clone)
+            self.push_state()
+            return self.to_dict()
 
         # --- Generation ---
-        if action == "generate_rows":
-            ids = data.get("row_ids", [])
-            for rid in ids:
-                row = STATE._row_by_id(rid)
-                if not row:
-                    continue
-                row.status = RowStatus.QUEUED
-                STATE.queue.enqueue(
-                    row,
-                    STATE.session.global_settings,
-                    row_index=STATE.session.rows.index(row) + 1,
-                    missing_only=bool(data.get("missing_only", False)),
-                )
-            return {"queued": ids}
+        if action == "preflight":
+            ids = set(data.get("row_ids") or [row.id for row in self.session.rows])
+            return preflight([row for row in self.session.rows if row.id in ids], self.session.global_settings, self.registry)
 
-        if action == "generate_missing":
-            ids = data.get("row_ids") or [row.id for row in STATE.session.rows]
-            queued: List[str] = []
-            for rid in ids:
-                row = STATE._row_by_id(rid)
-                if not row:
-                    continue
-                has_success = any(Path(img.file_path).exists() for img in row.images)
-                if not has_success:
-                    row.status = RowStatus.QUEUED
+        if action in {"generate_rows", "generate_missing", "retry_failed"}:
+            ids = data.get("row_ids")
+            if ids is None:
+                ids = [row.id for row in self.session.rows if action != "retry_failed" or row.status in {RowStatus.ERROR, RowStatus.FILTERED}]
+            rows = [self._row_by_id(rid) for rid in dict.fromkeys(ids)]
+            rows = [row for row in rows if row is not None]
+            if action == "retry_failed":
+                rows = [row for row in rows if row.status in {RowStatus.ERROR, RowStatus.FILTERED}]
+            report = preflight(rows, self.session.global_settings, self.registry)
+            if not report["valid"]:
+                raise ValueError("Batch validation failed: " + "; ".join(f"{r['prompt_id'] or r['row_id']}: {', '.join(r['errors'])}" for r in report["rows"] if r["errors"]))
+            queued = []
+            for row in rows:
+                if self.queue.enqueue(row, self.session.global_settings, row_index=self.session.rows.index(row) + 1,
+                                      missing_only=action == "generate_missing" or bool(data.get("missing_only", False))):
                     queued.append(row.id)
-                STATE.queue.enqueue(row, STATE.session.global_settings, row_index=STATE.session.rows.index(row) + 1, missing_only=True)
             return {"queued": queued}
 
-        if action == "retry_failed":
-            ids = data.get("row_ids") or [row.id for row in STATE.session.rows if row.status in {RowStatus.ERROR, RowStatus.FILTERED}]
-            queued: List[str] = []
-            for rid in ids:
-                row = STATE._row_by_id(rid)
-                if not row or row.status not in {RowStatus.ERROR, RowStatus.FILTERED}:
-                    continue
-                row.status = RowStatus.QUEUED
-                row.error_message = ""
-                queued.append(row.id)
-                STATE.queue.enqueue(row, STATE.session.global_settings, row_index=STATE.session.rows.index(row) + 1)
-            return {"queued": queued}
-
+        if action == "cancel_row":
+            self.queue.cancel(data["row_id"])
+            return {"cancelled": True}
         if action == "stop_all":
-            STATE.queue.cancel_all()
+            self.queue.cancel_all()
             return {"stopped": True}
-
         if action == "stop_after_current":
-            STATE.queue.stop_after_current()
+            self.queue.stop_after_current()
             return {"stopped_after_current": True}
 
         # --- Global Settings ---
-        if action == "global_settings":
-            STATE.push_state()
-            gs = STATE.session.global_settings
-            for key, val in data.items():
-                if hasattr(gs, key):
-                    setattr(gs, key, val)
-            STATE.queue.rate_limiter.set_rpm(gs.rate_limit_rpm)
-            if gs.concurrency_limit != STATE.queue.concurrency:
-                # Restart queue if concurrency changed
-                STATE.queue.shutdown()
-                STATE.queue = GenerationQueue(
-                    STATE.registry,
-                    STATE.session_manager.session_output_dir(),
-                    gs.concurrency_limit,
-                    gs.rate_limit_rpm
-                )
-                STATE.queue.register_listener(STATE._handle_event)
-            STATE.push_state()
-            return gs.to_dict()
-
-        if action == "apply_azure_logo_preset":
-            STATE.push_state()
-            gs = apply_azure_logo_preset(STATE.session.global_settings)
-            STATE.queue.rate_limiter.set_rpm(gs.rate_limit_rpm)
-            if STATE.queue.concurrency != gs.concurrency_limit:
-                STATE.queue.shutdown()
-                STATE.queue = GenerationQueue(
-                    STATE.registry,
-                    STATE.session_manager.session_output_dir(),
-                    gs.concurrency_limit,
-                    gs.rate_limit_rpm,
-                )
-                STATE.queue.register_listener(STATE._handle_event)
-            STATE.push_state()
-            return gs.to_dict()
+        if action in {"global_settings", "apply_azure_logo_preset"}:
+            current = self.session.global_settings.to_dict()
+            if action == "global_settings":
+                unknown = set(data) - set(current)
+                if unknown:
+                    raise ValueError(f"Unknown settings: {', '.join(sorted(unknown))}")
+                current.update(data)
+                candidate = GlobalSettings.from_dict(current)
+            else:
+                candidate = apply_azure_logo_preset(GlobalSettings.from_dict(current))
+            validate_settings(candidate)
+            changed_concurrency = candidate.concurrency_limit != self.queue.concurrency
+            if changed_concurrency:
+                self.require_idle()
+            self.push_state()
+            self.session.global_settings = candidate
+            self.queue.rate_limiter.set_rpm(candidate.rate_limit_rpm)
+            if changed_concurrency:
+                self.queue.shutdown()
+                self.queue = self._create_queue()
+            self.push_state()
+            return candidate.to_dict()
 
         if action == "provider_status":
             azure_missing = []
@@ -488,10 +361,10 @@ class Handler(BaseHTTPRequestHandler):
             }
 
         if action == "verify_batch":
-            return verify_rows(STATE.session.rows)
+            return verify_rows(self.session.rows, self.session.global_settings)
 
         if action == "generation_log":
-            log_path = STATE.session_manager.session_output_dir().parent / "generation_log.jsonl"
+            log_path = self.session_manager.session_output_dir().parent / "generation_log.jsonl"
             return {"rows": read_generation_log(log_path), "path": str(log_path)}
 
         if action == "select_image_file":
@@ -512,11 +385,16 @@ class Handler(BaseHTTPRequestHandler):
             folder = QFileDialog.getExistingDirectory(None, "Select Folder")
             return {"path": folder}
             
+        if action == "export_bundle":
+            ids = data.get("row_ids")
+            rows = self.session.rows if ids is None else [row for row in self.session.rows if row.id in ids]
+            return ImageExporter(self.session.global_settings.naming_pattern).export_bundle(self.session, Path(data["folder"]), rows)
+
         if action == "export":
             folder = Path(data.get("folder", str(Path.home() / "Pictures")))
-            rows = [STATE._row_by_id(rid) for rid in data.get("row_ids", [])]
+            rows = [self._row_by_id(rid) for rid in data.get("row_ids", [])]
             rows = [r for r in rows if r]
-            exporter = ImageExporter(STATE.session.global_settings.naming_pattern)
+            exporter = ImageExporter(self.session.global_settings.naming_pattern)
             count, _ = exporter.export_rows(rows, folder, export_metadata=True)
             return {"exported": count}
 
@@ -544,9 +422,9 @@ class Handler(BaseHTTPRequestHandler):
         if action == "save_template":
             from app.models import PromptTemplate
             tpl = PromptTemplate.from_dict(data)
-            STATE.session.templates.append(tpl)
-            STATE.session_manager.autosave()
-            return {"templates": [t.to_dict() for t in STATE.session.templates]}
+            self.session.templates.append(tpl)
+            self.session_manager.autosave()
+            return {"templates": [t.to_dict() for t in self.session.templates]}
             
         if action == "expand_template":
             from app.templates import expand_template, parse_variable_block
@@ -559,12 +437,131 @@ class Handler(BaseHTTPRequestHandler):
             prompts = expand_template(tpl)
             return {"prompts": prompts}
 
-        return {}
+        raise ValueError(f"Unknown action: {action}")
+
+STATE = BackendState()
+
+def _json_response(handler: BaseHTTPRequestHandler, body: Dict, status: int = 200) -> None:
+    data = json.dumps(body).encode("utf-8")
+    handler.send_response(status)
+    _set_cors_headers(handler)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
+
+def _origin_allowed(origin: str | None) -> bool:
+    if origin is None:
+        return True
+    allowed = {"null", "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"}
+    allowed.update(item.strip() for item in os.environ.get("IMAGEAI_ALLOWED_ORIGINS", "").split(",") if item.strip())
+    return origin in allowed
+
+
+def _set_cors_headers(handler: BaseHTTPRequestHandler) -> None:
+    origin = handler.headers.get("Origin")
+    if origin and _origin_allowed(origin):
+        handler.send_header("Access-Control-Allow-Origin", origin)
+        handler.send_header("Vary", "Origin")
+    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+    handler.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+
+class Handler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self) -> None:
+        if not _origin_allowed(self.headers.get("Origin")):
+            self.send_error(403, "Origin is not allowed")
+            return
+        self.send_response(200)
+        _set_cors_headers(self)
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path != "/images":
+            self.send_error(404)
+            return
+
+        query = parse_qs(parsed.query or "")
+        raw_path = query.get("path", [None])[0]
+        if not raw_path:
+            self.send_error(400, "missing path")
+            return
+
+        file_path = Path(unquote(raw_path))
+        with STATE._lock:
+            allowed = {Path(item.file_path).resolve() for row in STATE.session.rows for item in [*row.images, *row.attachments] if item.file_path}
+        if file_path.resolve() not in allowed:
+            self.send_error(403)
+            return
+
+        if not file_path.exists() or not file_path.is_file():
+            self.send_error(404)
+            return
+
+        data = file_path.read_bytes()
+        mime, _ = mimetypes.guess_type(file_path.name)
+        self.send_response(200)
+        _set_cors_headers(self)
+        self.send_header("Content-Type", mime or "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            # Client disconnected
+            pass
+
+    def do_POST(self) -> None:
+        if not _origin_allowed(self.headers.get("Origin")):
+            _json_response(self, {"ok": False, "error": "Origin is not allowed"}, 403)
+            return
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            _json_response(self, {"ok": False, "error": "Content-Type must be application/json"}, 415)
+            return
+        if urlparse(self.path).path != "/rpc":
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            _json_response(self, {"ok": False, "error": "Invalid Content-Length"}, 400)
+            return
+        if length < 1 or length > 16 * 1024 * 1024:
+            _json_response(self, {"ok": False, "error": "Request body must be 1 byte to 16 MiB"}, 413)
+            return
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception:
+            _json_response(self, {"error": "invalid json"}, 400)
+            return
+        if not isinstance(payload, dict):
+            _json_response(self, {"ok": False, "error": "RPC payload must be an object"}, 400)
+            return
+        action = payload.get("action")
+        data = payload.get("data", {})
+
+        try:
+            result = STATE.dispatch(action, data)
+            _json_response(self, {"ok": True, "data": result})
+        except (ValueError, KeyError, TypeError) as exc:
+            _json_response(self, {"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            print(f"[!] ERROR in {action}: {exc}")
+            _json_response(self, {"ok": False, "error": str(exc)}, 500)
+
 
 def run_server(port: int = 8765) -> None:
     server = HTTPServer(("127.0.0.1", port), Handler)
     print(f"[backend_server] listening on http://127.0.0.1:{port}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        STATE.queue.shutdown()
+        STATE.session_manager.autosave()
+        server.server_close()
 
 if __name__ == "__main__":
     run_server()
