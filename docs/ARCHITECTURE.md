@@ -1,6 +1,6 @@
 # Architecture
 
-ImageAI is a local batch workspace built around one Python generation core. The desktop application and CLI share validation, provider adapters, queue semantics, persisted image metadata and export behavior. The application records what it requested and what it received; it does not automatically repeat a paid request whose outcome is uncertain.
+Image Batcher is a local batch workspace built around one Python generation core. The desktop application and CLI share validation, provider adapters, queue semantics, persisted image metadata and export behavior. The application records what it requested and what it received; it does not automatically repeat a paid request whose outcome is uncertain.
 
 This document describes the implementation in this repository. Provider availability and account quotas are separate from the local application contract.
 

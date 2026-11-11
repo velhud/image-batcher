@@ -18,7 +18,7 @@ declare global {
 }
 
 export function desktopBridge(): DesktopBridge {
-  if (!window.imageaiDesktop) throw new Error('Open ImageAI Desktop to use native file and clipboard actions.');
+  if (!window.imageaiDesktop) throw new Error('Open Image Batcher to use native file and clipboard actions.');
   return window.imageaiDesktop;
 }
 

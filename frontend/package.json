@@ -44,7 +44,7 @@
   },
   "build": {
     "appId": "io.github.velhud.imageai",
-    "productName": "ImageAI Batch Generator",
+    "productName": "Image Batcher",
     "files": [
       "dist/**",
       "dist-electron/**",

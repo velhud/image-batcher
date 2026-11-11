@@ -10,7 +10,7 @@ const assetRoot = path.resolve(moduleDirectory, '../dist');
 const desktopOrigin = 'imageai://desktop';
 const isDev = !app.isPackaged;
 const rendererUrl = process.env.VITE_DEV_SERVER_URL || desktopOrigin;
-const sessionFilters = [{ name: 'ImageAI session', extensions: ['json'] }];
+const sessionFilters = [{ name: 'Image Batcher session', extensions: ['json'] }];
 const backend = new DesktopBackend(
   isDev ? path.resolve(moduleDirectory, '../..') : path.join(process.resourcesPath, 'backend'),
   isDev && process.env.VITE_DEV_SERVER_URL ? new URL(rendererUrl).origin : desktopOrigin,
@@ -27,7 +27,7 @@ function trustedWindow(event: IpcMainInvokeEvent): BrowserWindow {
   const trusted = new URL(rendererUrl);
   if (!window || event.senderFrame !== event.sender.mainFrame ||
       url.protocol !== trusted.protocol || url.host !== trusted.host) {
-    throw new Error('Desktop action requires the ImageAI window.');
+    throw new Error('Desktop action requires the Image Batcher window.');
   }
   return window;
 }
@@ -43,13 +43,13 @@ function registerDesktopActions() {
   });
   ipcMain.handle('desktop:open-session', async event => {
     const result = await dialog.showOpenDialog(trustedWindow(event), {
-      title: 'Open ImageAI session', properties: ['openFile'], filters: sessionFilters,
+      title: 'Open Image Batcher session', properties: ['openFile'], filters: sessionFilters,
     });
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('desktop:save-session', async event => {
     const result = await dialog.showSaveDialog(trustedWindow(event), {
-      title: 'Save ImageAI session as', defaultPath: 'session.json', filters: sessionFilters,
+      title: 'Save Image Batcher session as', defaultPath: 'session.json', filters: sessionFilters,
     });
     return result.canceled ? null : result.filePath;
   });
@@ -101,7 +101,7 @@ function createWindow() {
     width: 1280,
     height: 900,
     backgroundColor: '#0f172a',
-    title: 'ImageAI Batch Generator',
+    title: 'Image Batcher',
     webPreferences: { preload: path.resolve(moduleDirectory, '../electron/preload.cjs') },
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

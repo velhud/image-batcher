@@ -97,7 +97,7 @@ function App() {
   }
 
   if (!state || backendUnavailable) return <div className="h-screen flex flex-col items-center justify-center bg-background text-text-main gap-4 px-8">
-    <h1 className="text-xl font-semibold">ImageAI backend unavailable</h1>
+    <h1 className="text-xl font-semibold">Image Batcher backend unavailable</h1>
     <p role="alert" className="text-text-muted text-sm max-w-xl text-center">{actionError || errorMessage(error || 'Waiting for the local backend.')}</p>
     <Button disabled={reconnecting} onClick={reconnect}>{reconnecting ? 'Reconnecting…' : 'Reconnect'}</Button>
   </div>;

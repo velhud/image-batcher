@@ -1,6 +1,6 @@
 # Security Policy
 
-ImageAI reads provider credentials from local environment variables or a local `.env` file. Credentials must never be committed to the repository.
+Image Batcher reads provider credentials from local environment variables or a local `.env` file. Credentials must never be committed to the repository.
 
 If you find a security issue, please open a private GitHub security advisory or contact the maintainer privately before publishing details.
 

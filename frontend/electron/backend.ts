@@ -20,7 +20,7 @@ export class DesktopBackend {
     this.process = child;
     this.ready = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('The ImageAI backend took too long to start.'));
+        reject(new Error('The Image Batcher backend took too long to start.'));
         child.kill();
       }, 12000);
       createInterface({ input: child.stdout }).on('line', line => {
@@ -32,12 +32,12 @@ export class DesktopBackend {
       });
       child.once('error', error => {
         clearTimeout(timeout);
-        console.error('Could not start the ImageAI Python process.', error);
-        reject(new Error('Could not start Python. Check the installed ImageAI dependencies and interpreter path.'));
+        console.error('Could not start the Image Batcher Python process.', error);
+        reject(new Error('Could not start Python. Check the installed Image Batcher dependencies and interpreter path.'));
       });
       child.once('close', () => {
         clearTimeout(timeout);
-        reject(new Error('The ImageAI backend exited before it became ready. Check the Python setup and try again.'));
+        reject(new Error('The Image Batcher backend exited before it became ready. Check the Python setup and try again.'));
         if (this.process === child) {
           this.process = undefined;
           this.ready = undefined;
@@ -48,7 +48,7 @@ export class DesktopBackend {
   }
 
   origin(): Promise<string> {
-    return this.ready ?? Promise.reject(new Error('The ImageAI backend is stopped. Reconnect to reopen the workspace.'));
+    return this.ready ?? Promise.reject(new Error('The Image Batcher backend is stopped. Reconnect to reopen the workspace.'));
   }
 
   stop(): void {

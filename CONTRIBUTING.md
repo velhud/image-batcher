@@ -1,6 +1,6 @@
-# Contributing to ImageAI
+# Contributing to Image Batcher
 
-ImageAI focuses on dependable structured image batches and portable results. Read [Architecture](docs/ARCHITECTURE.md) before changing generation, persistence, or export behavior, and [Provider reference](docs/PROVIDERS.md) before adding provider options.
+Image Batcher focuses on dependable structured image batches and portable results. Read [Architecture](docs/ARCHITECTURE.md) before changing generation, persistence, or export behavior, and [Provider reference](docs/PROVIDERS.md) before adding provider options.
 
 ## Local setup
 

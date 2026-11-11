@@ -1,4 +1,4 @@
-name: Validate ImageAI
+name: Validate Image Batcher
 on:
   push:
   pull_request:
@@ -74,11 +74,11 @@ jobs:
       - if: runner.os == 'macOS'
         run: |
           export IMAGEAI_PYTHON="$(command -v python)"
-          export IMAGEAI_ELECTRON_EXECUTABLE="$(find "$PWD/.desktop-package" -type f -path '*/Contents/MacOS/ImageAI Batch Generator' -print -quit)"
+          export IMAGEAI_ELECTRON_EXECUTABLE="$(find "$PWD/.desktop-package" -type f -path '*/Contents/MacOS/Image Batcher' -print -quit)"
           npm run test:desktop
       - if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $env:IMAGEAI_PYTHON = (Get-Command python).Source
-          $env:IMAGEAI_ELECTRON_EXECUTABLE = (Resolve-Path '.desktop-package/win-unpacked/ImageAI Batch Generator.exe').Path
+          $env:IMAGEAI_ELECTRON_EXECUTABLE = (Resolve-Path '.desktop-package/win-unpacked/Image Batcher.exe').Path
           npm run test:desktop

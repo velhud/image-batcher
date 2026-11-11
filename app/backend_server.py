@@ -557,6 +557,6 @@ def run_server(port: int = 8765) -> None:
         server.server_close()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the ImageAI local backend.")
+    parser = argparse.ArgumentParser(description="Run the Image Batcher local backend.")
     parser.add_argument("--port", type=int, default=8765, help="Loopback port. Use 0 to select an available port.")
     run_server(parser.parse_args().port)

@@ -198,7 +198,7 @@ class ImageExporter:
                         "reproduction_note": "Request settings and source images are preserved; provider output pixels are not guaranteed deterministic."}
             atomic_write_json(stage / "manifest.json", manifest)
             (stage / "README.txt").write_text(
-                "ImageAI portable batch\n\nOpen session.json from ImageAI to review or explicitly regenerate.\n"
+                "Image Batcher portable batch\n\nOpen session.json from Image Batcher to review or explicitly regenerate.\n"
                 "manifest.json records relative paths, SHA-256 hashes, and missing source files.\n"
                 "Contact sheets are paginated at 40 images; originals remain in images/.\n"
                 "A retained request is reproducible input, not a guarantee of identical generated pixels.\n", encoding="utf-8")

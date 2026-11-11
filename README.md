@@ -1,10 +1,10 @@
-# ImageAI Batch Generator
+# Image Batcher
 
 A desktop and command-line workspace for structured image batches: import prompts, apply shared settings or row overrides, validate a batch, generate it through a bounded queue, and hand off images together with their provenance.
 
-Use the **Mock provider** to run the complete workflow offline. OpenAI, Google Gemini, and Azure OpenAI are optional. ImageAI preserves the prompt, settings, reference inputs, request metadata, and file hashes associated with each saved result.
+Use the **Mock provider** to run the complete workflow offline. OpenAI, Google Gemini, and Azure OpenAI are optional. Image Batcher preserves the prompt, settings, reference inputs, request metadata, and file hashes associated with each saved result.
 
-## What the release candidate adds
+## Features
 
 - **Preflight before generation:** validate the complete selected batch, model capabilities, dimensions, references, and local quota settings before admitting work.
 - **Reliable queue behavior:** immutable requests and reference copies; duplicate admission protection; cancellation while queued or waiting for quota; retention of partial and late results.
@@ -13,7 +13,7 @@ Use the **Mock provider** to run the complete workflow offline. OpenAI, Google G
 - **Current provider contracts:** GPT Image generation/reference edits, stable Gemini image models, and conservative Azure deployment support. Unsupported or retired selections fail explicitly.
 - **Portable batch export:** relative-path session, exact image bytes, current and historical reference inputs, SHA-256 manifest, and paginated contact sheets. Existing exports are not overwritten.
 - **Headless batches:** a dry-run-by-default CLI and a credential-free example.
-- **ImageAI Desktop:** the Electron workspace uses native file dialogs and clipboard, with shared generation, preflight and export through the local backend.
+- **Image Batcher:** the Electron workspace uses native file dialogs and clipboard, with shared generation, preflight and export through the local backend.
 
 ## Install
 
@@ -47,7 +47,7 @@ imageai-batch \
 
 `python -m app.cli` is equivalent to `imageai-batch`. Each run requires an empty output directory so an earlier run cannot be overwritten. The command prints a JSON summary containing `status`, `images_saved`, `session_path`, and `bundle_path`. Exit codes are **0** for success, **2** for invalid input/configuration, and **1** for a failed, cancelled, or timed-out run.
 
-## ImageAI Desktop
+## Desktop app
 
 With the Python environment active and Node **22.12+** installed:
 
@@ -57,7 +57,7 @@ npm ci
 npm run dev
 ```
 
-ImageAI opens its own window and starts a local Python backend automatically. Import a batch, adjust global defaults or row overrides, and use **Preflight** to inspect resolved requests. Use **Review Sample** on a row to generate one image. **Generate Missing** counts a matching sample toward the batch target. Open **Result Details** in the gallery to inspect the recorded prompt, settings and file identity before export. **Open Session** and **Save Session As** use system file dialogs.
+Image Batcher opens its own window and starts a local Python backend automatically. Import a batch, adjust global defaults or row overrides, and use **Preflight** to inspect resolved requests. Use **Review Sample** on a row to generate one image. **Generate Missing** counts a matching sample toward the batch target. Open **Result Details** in the gallery to inspect the recorded prompt, settings and file identity before export. **Open Session** and **Save Session As** use system file dialogs.
 
 Use `npm run build` to package the desktop app. The package includes backend source and requires Python with the runtime dependencies installed. Set `IMAGEAI_PYTHON` to the absolute interpreter path when launching the packaged executable if it cannot find Python on the system path. The [verification guide](docs/VERIFICATION.md) includes a packaged-app smoke test.
 
@@ -65,7 +65,7 @@ Sessions and generated artifacts are stored under `~/.imagen/` by default. Set `
 
 ## Provider setup
 
-Set environment variables for the provider you use, or copy `.env.example` to the source checkout’s `.env`. A packaged app can read a local `.env` in its data directory. Restart ImageAI after changing provider configuration.
+Set environment variables for the provider you use, or copy `.env.example` to the source checkout’s `.env`. A packaged app can read a local `.env` in its data directory. Restart Image Batcher after changing provider configuration.
 
 | Provider | Configuration | Implemented scope |
 |---|---|---|
@@ -112,7 +112,7 @@ Move the whole folder and open its `session.json` on another installation. A mis
 
 ## Azure logo batches
 
-The Azure Logo Batch preset is available in ImageAI Desktop. It selects GPT Image 2, square 1024 output, medium quality, one PNG per prompt, concurrency 1, and an initial local budget of four images per minute. This is an application default, not a statement of your Azure deployment quota.
+The Azure Logo Batch preset is available in Image Batcher. It selects GPT Image 2, square 1024 output, medium quality, one PNG per prompt, concurrency 1, and an initial local budget of four images per minute. This is an application default, not a statement of your Azure deployment quota.
 
 Structured IDs are retained in readable filenames, for example `cat01_prompt0001_q-medium_run01.png`; collisions receive an additional suffix. `generation_log.jsonl` records session runs alongside durable receipts. Generate Missing counts matching saved images, and verification distinguishes successful prompt rows from actual image counts.
 
@@ -124,7 +124,7 @@ python scripts/prepare_logo_prompts.py \
   --output /path/to/prepared-output
 ```
 
-The utility produces CSV/JSON/JSONL batches, per-category CSVs, an ImageAI session, and a preparation report with source metadata.
+The utility produces CSV/JSON/JSONL batches, per-category CSVs, an Image Batcher session, and a preparation report with source metadata.
 
 ## Development and verification
 
@@ -150,7 +150,7 @@ CI runs Python tests and the offline demo on Linux, macOS and Windows, renderer 
 | `app/session_manager.py`, `app/storage.py` | Atomic persistence and receipt recovery |
 | `app/exporter.py` | Ordinary and portable exports |
 | `app/cli.py`, `app/backend_server.py` | CLI and local RPC |
-| `frontend/` | ImageAI Desktop renderer and Electron application |
+| `frontend/` | Image Batcher renderer and Electron application |
 | `tests/`, `frontend/tests/` | Python, browser and packaged desktop regressions |
 
 [Architecture](docs/ARCHITECTURE.md) explains lifecycle and persistence invariants. [Research and release direction](docs/RESEARCH.md) records the provider/competitor evidence behind this scope. [CHANGELOG.md](CHANGELOG.md) describes compatibility changes, and [CONTRIBUTING.md](CONTRIBUTING.md) lists contribution requirements. The project is licensed under [MIT](LICENSE).

@@ -34,7 +34,7 @@ MAX_ROWS = 10000
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Validate an ImageAI batch without network calls; add --run to generate it.",
+        description="Validate a batch of prompts without network calls; add --run to generate it.",
         epilog="Example: python -m app.cli --input examples/demo-prompts.csv --mode csv --output ./demo-output --provider mock --run",
     )
     parser.add_argument("--input", type=Path, required=True, help="UTF-8 prompt file (up to 8 MiB).")

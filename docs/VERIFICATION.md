@@ -92,7 +92,7 @@ print("Verified six images and every portable manifest entry.")
 PY
 ```
 
-Open the contact sheet and the exported `session.json` in ImageAI. Verify that prompts, IDs, image references and settings are present. Copy the portable folder to a different directory, then open its session there; images should resolve from their relative paths.
+Open the contact sheet and the exported `session.json` in Image Batcher. Verify that prompts, IDs, image references and settings are present. Copy the portable folder to a different directory, then open its session there; images should resolve from their relative paths.
 
 A second `--run` targeting the same populated output directory must return validation exit code `2` without replacing the earlier files. Use a fresh directory for another run. The CLI intentionally has no automatic resume/replay option.
 
@@ -137,11 +137,11 @@ cd frontend
 npm ci
 npm run build -- --dir --publish never --config.directories.output=.desktop-package
 export IMAGEAI_PYTHON="$(command -v python)"
-export IMAGEAI_ELECTRON_EXECUTABLE="$(find "$PWD/.desktop-package" -type f -path '*/Contents/MacOS/ImageAI Batch Generator' -print -quit)"
+export IMAGEAI_ELECTRON_EXECUTABLE="$(find "$PWD/.desktop-package" -type f -path '*/Contents/MacOS/Image Batcher' -print -quit)"
 npm run test:desktop
 ```
 
-On Windows, set `IMAGEAI_PYTHON` to the Python interpreter and `IMAGEAI_ELECTRON_EXECUTABLE` to the full path of `.desktop-package/win-unpacked/ImageAI Batch Generator.exe`. The smoke test starts the packaged app from a different directory and runs the real Python backend. It supplies deterministic file selections at the OS-dialog boundary and verifies the decoded image at the clipboard boundary.
+On Windows, set `IMAGEAI_PYTHON` to the Python interpreter and `IMAGEAI_ELECTRON_EXECUTABLE` to the full path of `.desktop-package/win-unpacked/Image Batcher.exe`. The smoke test starts the packaged app from a different directory and runs the real Python backend. It supplies deterministic file selections at the OS-dialog boundary and verifies the decoded image at the clipboard boundary.
 
 For interactive acceptance, launch the packaged executable with the same Python interpreter. In the desktop window:
 
